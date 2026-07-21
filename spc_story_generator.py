@@ -23,7 +23,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 BASE = "https://www.spc.noaa.gov/products/outlook"
 CAT_GEOJSON_URL = f"{BASE}/day1otlk_cat.nolyr.geojson"
-MAP_IMAGE_URL = f"{BASE}/day1otlk.gif"
+MAP_IMAGE_URL = f"{BASE}/day1otlk.png"
 
 # Defaults to a folder INSIDE the repo checkout -- the workflow commits and
 # pushes this folder so images (a) persist beyond ntfy's attachment expiry
