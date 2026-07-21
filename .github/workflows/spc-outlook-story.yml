@@ -30,20 +30,36 @@ jobs:
       - name: Install dependencies
         run: pip3 install --user -r requirements.txt
 
+      # main requires PRs + review, so the bot can't push slide commits there.
+      # Slides live on a separate, unprotected `stories` branch instead, checked
+      # out as a worktree here so rotate_old_slides() can see (and prune) the
+      # slides already committed from previous runs.
+      - name: Check out stories branch
+        run: |
+          git worktree prune
+          if git ls-remote --exit-code --heads origin stories >/dev/null 2>&1; then
+            git fetch origin stories
+            git worktree add stories-branch origin/stories -B stories
+          else
+            git worktree add --detach stories-branch
+            git -C stories-branch checkout --orphan stories
+            git -C stories-branch rm -rf . >/dev/null 2>&1 || true
+          fi
+
       - name: Generate story slides if risk is Enhanced+
         env:
-          SPC_STORY_OUTPUT_DIR: ${{ github.workspace }}/stories
+          SPC_STORY_OUTPUT_DIR: ${{ github.workspace }}/stories-branch/stories
           SPC_NTFY_TOPIC: ${{ secrets.SPC_NTFY_TOPIC }}
           # Only set this if the repo (or this path within it) is PUBLIC --
           # ntfy fetches this URL itself with no auth of its own. Leave unset
           # to fall back to direct-byte delivery (works with a private repo,
           # but subject to ntfy's 15 MB / 3-hour attachment limits).
-          SPC_STORY_RAW_BASE_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/stories
+          SPC_STORY_RAW_BASE_URL: https://raw.githubusercontent.com/${{ github.repository }}/stories/stories
         run: python3 spc_story_generator.py
 
       - name: Commit and push new slides
         run: |
-          cd "${{ github.workspace }}"
+          cd stories-branch
           git config user.name "spc-outlook-bot"
           git config user.email "spc-outlook-bot@users.noreply.github.com"
           git add stories/
@@ -51,7 +67,7 @@ jobs:
             echo "No new slides this run -- nothing to commit."
           else
             git commit -m "SPC outlook story: $(date -u +'%Y-%m-%d %H:%M UTC')"
-            git push
+            git push origin stories
           fi
 
       - name: Upload slides as workflow artifact (optional secondary copy)
@@ -59,5 +75,9 @@ jobs:
         if: always()
         with:
           name: spc-story-slides-${{ github.run_id }}
-          path: stories/
+          path: stories-branch/stories/
           if-no-files-found: ignore
+
+      - name: Clean up stories worktree
+        if: always()
+        run: git worktree remove stories-branch --force || true
