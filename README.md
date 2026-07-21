@@ -62,7 +62,7 @@ attach-from-URL semantics), but test both once before relying on them.
 ## Setup
 
 ```bash
-pip3 install --break-system-packages -r requirements.txt
+pip3 install --user -r requirements.txt
 python3 spc_story_generator.py
 ```
 

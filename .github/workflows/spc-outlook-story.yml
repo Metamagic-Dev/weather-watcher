@@ -28,7 +28,7 @@ jobs:
         # which is what lets `git push` below work without extra setup.
 
       - name: Install dependencies
-        run: pip3 install --break-system-packages -r requirements.txt
+        run: pip3 install --user -r requirements.txt
 
       - name: Generate story slides if risk is Enhanced+
         env:
