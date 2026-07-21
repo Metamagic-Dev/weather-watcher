@@ -35,22 +35,14 @@ HAZARDS = (
 )
 
 # Defaults to a folder INSIDE the repo checkout -- the workflow commits and
-# pushes this folder so images (a) persist beyond ntfy's attachment expiry
-# and (b) generate the commit activity that keeps GitHub from auto-disabling
-# the schedule after 60 quiet days. See rotate_old_slides() for cleanup.
+# pushes this folder so images (a) are the actual delivery mechanism (pulled
+# by the iOS Shortcut) and (b) generate the commit activity that keeps GitHub
+# from auto-disabling the schedule after 60 quiet days. See rotate_old_slides()
+# for cleanup.
 OUTPUT_DIR = os.environ.get("SPC_STORY_OUTPUT_DIR", "./stories")
 KEEP_RECENT = int(os.environ.get("SPC_STORY_KEEP_RECENT", "5"))
 
 NTFY_TOPIC = os.environ.get("SPC_NTFY_TOPIC")  # optional: push notification via ntfy.sh
-
-# If set (e.g. https://raw.githubusercontent.com/you/repo/main/stories), slides
-# are delivered to ntfy as a URL attachment pointing at the just-pushed commit
-# -- no 15 MB size limit, no 3-hour expiry, since ntfy just references the URL
-# instead of holding the bytes. Requires the repo (or at least this path) to
-# be PUBLIC, since ntfy's server fetches the URL with no auth of its own.
-# If unset, falls back to PUTting the raw file bytes to ntfy directly (works
-# with a private repo, but subject to ntfy's 15 MB / 3-hour limits).
-RAW_BASE_URL = os.environ.get("SPC_STORY_RAW_BASE_URL", "").rstrip("/")
 
 # Categories worth posting about. SPC's own DN field gives severity order,
 # so we don't need to hardcode a rank -- just a trigger threshold by label.
@@ -344,41 +336,15 @@ def send_text_notification(message):
         print(f"ntfy text notification failed: {e}", file=sys.stderr)
 
 
-def send_file_to_phone(path, title):
-    """
-    Delivers one slide to your phone via ntfy, using whichever mechanism is
-    configured:
-
-    - RAW_BASE_URL set: sends an "Attach: <url>" pointing at the file that
-      was just committed and pushed to GitHub. No 15 MB limit, no 3-hour
-      expiry (verified against ntfy's docs -- externally-hosted attachments
-      aren't subject to those). Requires that URL to be publicly fetchable.
-    - RAW_BASE_URL unset: PUTs the local file's bytes directly as the
-      notification body (works with a private repo, but bound by ntfy's
-      15 MB size limit and 3-hour attachment expiry).
-    """
-    if not NTFY_TOPIC:
-        print(f"SPC_NTFY_TOPIC not set -- skipping phone delivery of {path}")
-        return
-    filename = os.path.basename(path)
-    headers = {"Title": title, "Tags": "warning"}
-    try:
-        if RAW_BASE_URL:
-            headers["Attach"] = f"{RAW_BASE_URL}/{filename}"
-            headers["Filename"] = filename
-            requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", headers=headers, timeout=15)
-        else:
-            headers["Filename"] = filename
-            with open(path, "rb") as f:
-                requests.put(f"https://ntfy.sh/{NTFY_TOPIC}", data=f, headers=headers, timeout=30)
-    except requests.RequestException as e:
-        print(f"ntfy delivery failed for {path}: {e}", file=sys.stderr)
-
-
 def notify_with_slides(risk_display, slide_paths):
-    send_text_notification(f"{risk_display} risk today -- {len(slide_paths)} story slide(s) incoming.")
-    for i, path in enumerate(slide_paths, start=1):
-        send_file_to_phone(path, f"SPC Outlook -- slide {i}/{len(slide_paths)}")
+    """
+    Single text-only ntfy notification -- no attachments, so this is one
+    push instead of one-per-slide. Slides themselves live on the `stories`
+    branch (and an iOS Shortcut pulls the latest set from there), so ntfy
+    only needs to announce that they're ready.
+    """
+    message = f"{risk_display} risk today -- {len(slide_paths)} story slide(s) ready in the repo."
+    send_text_notification(message)
     if sys.platform == "darwin":
         # Local fallback if this happens to run on the Mac itself (not your phone).
         safe_msg = f"{risk_display} risk today -- slides ready.".replace('"', "'")
