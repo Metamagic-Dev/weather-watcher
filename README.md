@@ -26,12 +26,14 @@ categorical color key.
 If the highest risk is Marginal, Slight, or none, the script exits quietly
 and produces no files.
 
-**Generation still runs on your Mac (self-hosted runner). Delivery to your
-phone happens via [ntfy](https://ntfy.sh), and the slides are also
-committed to this repo** under `stories/`, keeping only the 5 most recent
-sets. That commit does double duty:
+**Generation still runs on your Mac (self-hosted runner). The slides are
+committed to the `stories` branch** under `stories/` (keeping only the 5
+most recent sets), and a single [ntfy](https://ntfy.sh) text notification
+pings your phone when new ones are ready -- an iOS Shortcut then pulls the
+latest set straight from the branch. That commit does double duty:
 
-- it's what keeps the images available beyond ntfy's attachment limits, and
+- it's what makes the images available at all (the iOS Shortcut reads
+  straight from here), and
 - it's a real commit, which is what keeps GitHub from auto-disabling this
   scheduled workflow after 60 quiet days.
 
@@ -52,15 +54,12 @@ sets. That commit does double duty:
   depending on whether any hazard had a probability area that day) before
   the workflow commits, so the repo doesn't grow without bound. Done in
   Python, not bash -- see the comment in `rotate_old_slides()` for why.
-- Delivers each slide to your phone via ntfy, in one of two ways depending
-  on `SPC_STORY_RAW_BASE_URL`:
-  - **set** (repo/path is public): sends `Attach: <raw.githubusercontent
-    URL>` pointing at the file just pushed. No 15 MB limit, no 3-hour
-    expiry -- ntfy just references the URL.
-  - **unset**: PUTs the file's bytes directly to ntfy (works with a
-    private repo, but capped at ntfy's 15 MB size / 3-hour expiry).
-  Also fires a local macOS notification as a fallback if it happens to run
-  interactively on the Mac itself.
+- Sends a single text-only ntfy notification ("ENH risk today -- 2 story
+  slide(s) ready in the repo.") -- no image attachments, so it's one push
+  instead of one per slide. Also fires a local macOS notification as a
+  fallback if it happens to run interactively on the Mac itself.
+- The actual images are picked up separately by an iOS Shortcut that reads
+  the `stories` branch (see "Getting slides onto your phone" below).
 
 ## What I verified vs. assumed
 
@@ -93,19 +92,17 @@ Enhanced+ area up).
 
 ### One decision you need to make: public or private repo?
 
-This only matters for the ntfy delivery mechanism, not for whether the
-commit/60-day trick works (that part is unaffected by visibility):
+This now matters for the **"Download Latest SPC Slides" iOS Shortcut**
+(below), not for ntfy -- ntfy only ever sends a text ping, so it doesn't
+care about repo visibility:
 
 - **Public repo (or you're fine making just this narrow slice public):**
-  set `SPC_STORY_RAW_BASE_URL` in the workflow (already wired up to
-  `raw.githubusercontent.com/<repo>/<branch>/stories`). You get
-  no-size-limit, no-expiry delivery. Given the content is just NOAA's own
-  public map data, this is what I'd default to unless you have a reason to
-  keep the repo private.
-- **Private repo:** leave `SPC_STORY_RAW_BASE_URL` unset. ntfy has no way
-  to authenticate to fetch a private raw URL, so delivery falls back to
-  direct-byte PUT -- back to the 15 MB / 3-hour constraints from before,
-  but nothing else changes.
+  the Shortcut can hit `api.github.com` unauthenticated. Given the content
+  is just NOAA's own public map data, this is what I'd default to unless
+  you have a reason to keep the repo private.
+- **Private repo:** the Shortcut's "Get Contents of URL" steps need a
+  `Authorization: Bearer <token>` header added (a GitHub personal access
+  token with read access to this repo), or the API calls will 404/401.
 
 ### Getting slides onto your phone
 
@@ -114,12 +111,126 @@ commit/60-day trick works (that part is unaffected by visibility):
    docs say this explicitly, since there's no sign-up and anyone who knows
    the topic name can subscribe or publish to it).
 2. Set it as a repo secret named `SPC_NTFY_TOPIC`.
-3. When a slide is generated, you'll get a notification with the image
-   attached (or linked, if public) -- tap it, then share straight to
-   Instagram Stories.
+3. When new slides are generated, you'll get **one** text notification
+   ("ENH risk today -- 2 story slide(s) ready in the repo.").
+4. Run the **"Download Latest SPC Slides"** Shortcut (see below) to pull
+   the actual images down, then share straight to Instagram Stories.
 
-The `stories/` folder in the repo and the workflow artifact are both
-fallbacks if you ever miss a notification.
+The `stories` branch and the workflow artifact are both fallbacks if you
+ever miss a notification.
+
+### iOS Shortcut: "Download Latest SPC Slides"
+
+Build this in the Shortcuts app to pull the newest set of PNGs straight
+from the `stories` branch on demand (no attachments, no ntfy size/expiry
+limits -- it just reads the branch). The slide count varies day to day (1
+file if no hazard had a probability area, 2 if the hazards slide was also
+generated), so this filters by the shared timestamp prefix rather than
+assuming a fixed count:
+
+1. **Get Contents of URL** (GET)
+   `https://api.github.com/repos/Metamagic-Dev/weather-watcher/contents/stories?ref=stories`
+   -- note the `?ref=stories`, since slides live on the `stories` branch,
+   not `main`. Returns a JSON array of every file in `stories/`, each with
+   a `name` and a `download_url`.
+2. **Sort List** -- sort that array by the `name` key, **descending**.
+   Filenames encode `spc_story_YYYYMMDD_HHMM_...`, so the newest set sorts
+   to the top.
+3. **Get Item from List** -- index 1 of the sorted list → **Match Text**
+   its `name` against `spc_story_(\d{8}_\d{4})_` → capture Group 1 as
+   `LatestStamp`.
+4. **Repeat with Each** item in the *full* sorted list (not just the top
+   one):
+   - **Match Text** the item's `name` against the same
+     `spc_story_(\d{8}_\d{4})_` pattern → Group 1 as `ItemStamp`.
+   - **If** `ItemStamp` = `LatestStamp`:
+     - **Get Dictionary Value** `download_url` on the item.
+     - **Get Contents of URL** using that `download_url` -- downloads the
+       actual PNG bytes.
+     - **Save to Photo Album** (or **Quick Look**, if you'd rather preview
+       first).
+   - Non-matching items just get skipped -- since the list is sorted
+     descending, every match is guaranteed to come before the first
+     mismatch, so there's no need for an early exit.
+5. Optionally add a **Show Notification** or **Quick Look** at the end so
+   you know it finished.
+
+### iOS Shortcut (advanced): trigger a run, wait for it to publish, then download
+
+The Dispatch Workflow action only fires the run -- it doesn't wait for it
+or tell you which run it started, so "wait until published" has to be
+built as a small polling loop. Shortcuts doesn't have a native "repeat
+until" action, so the standard way to do this is a **helper shortcut that
+calls itself** every ~15s until a condition is met. Two shortcuts, but
+only one you ever run.
+
+**Watch out for:** dispatching only *runs* the workflow -- it doesn't
+guarantee new slides, since the script silently skips publishing on
+sub-Enhanced days. The design below also snapshots the `stories` branch
+listing before and after, so it can tell the difference between
+"finished, nothing new (risk didn't reach Enhanced)" and "finished, here
+are your slides" instead of just declaring victory once the run completes.
+
+**Helper shortcut -- "SPC Poll Run"** (receives a Dictionary as Shortcut
+Input with keys `before_run_id` and `deadline`; calls itself until done):
+
+1. **Get Dictionary Value** `before_run_id` and `deadline` from Shortcut
+   Input.
+2. **Get Contents of URL** (GET)
+   `https://api.github.com/repos/Metamagic-Dev/weather-watcher/actions/workflows/spc-outlook-story.yml/runs?event=workflow_dispatch&per_page=1`
+   -- scoped to this workflow file and to manual (`workflow_dispatch`)
+   runs only, so it can't get confused with the cron-scheduled runs.
+3. **Get Dictionary Value** `workflow_runs` → **Get Item from List** index 1
+   → this is the latest manual run. Pull its `id` and `status` values.
+4. **If** that run's `id` equals `before_run_id` (no new run has shown up
+   in the API yet) **or** `status` isn't `"completed"`:
+   - **Get Current Date** -- if it's past `deadline`, **Stop This
+     Shortcut** with output `"timeout"`.
+   - Otherwise, **Wait** 15 seconds, then **Run Shortcut** → "SPC Poll
+     Run" → passing the *same* Shortcut Input through unchanged, then
+     **Stop This Shortcut** with output = that call's result.
+5. **Otherwise** (a new run exists and it's completed): **Get Dictionary
+   Value** `conclusion` from that run, and **Stop This Shortcut** with
+   output = the conclusion (`"success"`, `"failure"`, etc.).
+
+**Main shortcut -- "SPC Publish & Download"** (this is the one you run):
+
+1. **Get Contents of URL** the `stories` branch contents endpoint (same
+   URL as the simple Shortcut above, with `?ref=stories`) → **Sort List**
+   by `name` descending → **Get Item from List** index 1 → **Get
+   Dictionary Value** `name` → save as `BeforeSlideName`.
+2. **Get Contents of URL** the same scoped runs endpoint from step 2 above
+   → `workflow_runs` → item 1 → `id` → save as `BeforeRunID` (whatever the
+   last manual run's ID was, so the poller can recognize a *new* one).
+3. **Dispatch Workflow** (your existing action) -- Owner
+   `Metamagic-Dev`, Workflow ID `spc-outlook-story.yml`, Repository
+   `weather-watcher`, Branch `main` (the workflow file itself still lives
+   on `main` -- only the generated slides go to `stories`).
+4. **Get Current Date** → add 6 minutes → format as ISO 8601 → save as
+   `Deadline`. (6 minutes is generous slack for runner pickup + image
+   fetch + git push when the Mac's already awake; bump it up if the Mac
+   sometimes needs to wake from sleep first.)
+5. **Dictionary**: `{"before_run_id": BeforeRunID, "deadline": Deadline}`
+   → **Run Shortcut** → "SPC Poll Run" with this as input → save result as
+   `PollResult`.
+6. **If** `PollResult` = `"timeout"` → **Show Alert** "Still running after
+   6 minutes -- check the Actions tab." → stop.
+7. **If** `PollResult` ≠ `"success"` → **Show Alert** "Workflow run failed
+   -- check GitHub Actions." → stop.
+8. Re-fetch the `stories` branch listing, sort descending, get item 1's
+   `name` → `AfterSlideName`. **If** it equals `BeforeSlideName` → **Show
+   Alert** "Run finished, but risk didn't reach Enhanced -- nothing new to
+   download." → stop.
+9. **Otherwise**: same download steps as the simple Shortcut -- the
+   stamp-match filter over the freshly-sorted list, **Repeat with Each**
+   → get `download_url` → **Get Contents of URL** → **Save to Photo
+   Album**.
+
+One more caveat specific to this version: if the Mac's asleep when you
+dispatch, the job just sits queued on GitHub's side (self-hosted runners
+only pick up jobs while online) -- the 6-minute deadline is a guess for
+"runner already awake," not a hard guarantee, so a timeout here doesn't
+necessarily mean something's wrong.
 
 ### Scheduling via GitHub Actions
 
@@ -133,8 +244,7 @@ commits any new slides. Things to double check:
   default `GITHUB_TOKEN` can push -- if your org/repo has tightened default
   token permissions below this, the push step will fail with a permissions
   error rather than silently doing nothing.
-- Add `SPC_NTFY_TOPIC` (and optionally leave/remove `SPC_STORY_RAW_BASE_URL`
-  per the public/private decision above) as repository secrets/variables.
+- Add `SPC_NTFY_TOPIC` as a repository secret.
 
 ## Blind spots / things I haven't solved for you
 
@@ -165,12 +275,13 @@ commits any new slides. Things to double check:
   but I haven't tested this under real overlap.
 
 **Delivery mechanism**
-- ntfy's direct-byte fallback still expires attachments from ntfy.sh
-  **3 hours** after sending -- only relevant if you go the private-repo
-  route above.
 - The topic name is effectively a password with no rotation/revocation UI
   beyond picking a new one. Don't reuse a topic name you use for anything
   sensitive.
+- The "Download Latest SPC Slides" Shortcut hits `api.github.com`
+  unauthenticated, which is capped at 60 requests/hour per IP -- a
+  non-issue at 5 checks/day, but worth knowing if you run it repeatedly
+  while testing.
 
 **The self-hosted runner itself**
 - GitHub's `schedule` trigger only fires if a runner is online to pick up
