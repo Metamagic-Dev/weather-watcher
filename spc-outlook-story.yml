@@ -1,0 +1,63 @@
+name: SPC Outlook Story Generator
+
+on:
+  schedule:
+    # ~30-40 min after each SPC Day 1 Outlook issuance (0600z, 1300z, 1630z, 2000z, 0100z UTC)
+    - cron: "35 6 * * *"
+    - cron: "35 13 * * *"
+    - cron: "50 16 * * *"
+    - cron: "35 20 * * *"
+    - cron: "35 1 * * *"
+  workflow_dispatch: {} # lets you trigger it manually to test
+
+# Prevents overlapping runs from racing each other on git push.
+concurrency:
+  group: spc-outlook-story
+  cancel-in-progress: false
+
+permissions:
+  contents: write # needed to commit/push the generated slides
+
+jobs:
+  generate:
+    # Adjust this label to match whatever you tagged your self-hosted M1 runner with.
+    runs-on: [self-hosted, macOS, ARM64]
+    steps:
+      - uses: actions/checkout@v4
+        # actions/checkout persists a token-authenticated remote by default,
+        # which is what lets `git push` below work without extra setup.
+
+      - name: Install dependencies
+        run: pip3 install --break-system-packages -r requirements.txt
+
+      - name: Generate story slides if risk is Enhanced+
+        env:
+          SPC_STORY_OUTPUT_DIR: ${{ github.workspace }}/stories
+          SPC_NTFY_TOPIC: ${{ secrets.SPC_NTFY_TOPIC }}
+          # Only set this if the repo (or this path within it) is PUBLIC --
+          # ntfy fetches this URL itself with no auth of its own. Leave unset
+          # to fall back to direct-byte delivery (works with a private repo,
+          # but subject to ntfy's 15 MB / 3-hour attachment limits).
+          SPC_STORY_RAW_BASE_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/stories
+        run: python3 spc_story_generator.py
+
+      - name: Commit and push new slides
+        run: |
+          cd "${{ github.workspace }}"
+          git config user.name "spc-outlook-bot"
+          git config user.email "spc-outlook-bot@users.noreply.github.com"
+          git add stories/
+          if git diff --cached --quiet; then
+            echo "No new slides this run -- nothing to commit."
+          else
+            git commit -m "SPC outlook story: $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
+
+      - name: Upload slides as workflow artifact (optional secondary copy)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spc-story-slides-${{ github.run_id }}
+          path: stories/
+          if-no-files-found: ignore
