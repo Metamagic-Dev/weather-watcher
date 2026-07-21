@@ -1,11 +1,27 @@
 # SPC Outlook Story Generator
 
-Generates two Instagram Story-sized PNGs (1080x1920) whenever the SPC Day 1
-Convective Outlook reaches **Enhanced** risk or higher:
+Generates a set of Instagram Story-sized PNGs (1080x1920) whenever the SPC
+Day 1 Convective Outlook reaches **Enhanced** risk or higher:
 
-1. `..._1_map.png` -- the official SPC map with a colored risk banner
-2. `..._2_breakdown.png` -- a list of every risk category present, colored
-   using SPC's own fill colors
+1. `..._1_map.png` -- the official categorical outlook map with a colored
+   risk banner
+2. `..._2_hazards.png` -- every hazard (tornado/wind/hail) that actually has
+   a probability area today, each with SPC's own probability map graphic and
+   a pill badge showing that hazard's peak percentage:
+   - **3 hazards present**: the most prominent one (highest peak
+     percentage) is a full-width hero card on top; the other two sit side
+     by side below it.
+   - **1-2 hazards present**: stacked full width instead.
+   - A hazard with no probability contour at all today (e.g. no wind risk
+     drawn anywhere) is left out entirely, and this slide is skipped if
+     none of the three have any area.
+
+There's intentionally no separate "risk breakdown"/legend slide -- SPC's own
+map graphics already bake a color-key legend into the corner of the image,
+so a second slide repeating it as a list added a redundant screen instead of
+new information. Splitting out tornado/wind/hail instead gives each hazard
+its own real data (peak %, its own map) rather than restating the
+categorical color key.
 
 If the highest risk is Marginal, Slight, or none, the script exits quietly
 and produces no files.
@@ -23,15 +39,19 @@ sets. That commit does double duty:
 
 - Pulls the categorical risk polygons from SPC's public GeoJSON export
   (`day1otlk_cat.nolyr.geojson`) and the official map graphic
-  (`day1otlk.gif`) -- no API key needed.
+  (`day1otlk.png`) -- no API key needed. Each hazard pulls the matching
+  pair (e.g. `day1otlk_torn.nolyr.geojson` + `day1probotlk_torn.png`) the
+  same way.
 - Risk severity comes from SPC's own `DN` field, and colors come from the
   GeoJSON's own `fill` property, so it doesn't rely on a hardcoded color
-  table that could drift from SPC's actual palette.
+  table that could drift from SPC's actual palette. The hazard slide's
+  hero (when all 3 are present) is picked by comparing `DN` too.
 - Renders slides with a bundled DejaVu Sans font (in `fonts/`) so text
   looks identical regardless of what OS actually runs the script.
-- Rotates `stories/` down to the 5 most recent sets (10 files) before the
-  workflow commits, so the repo doesn't grow without bound. Done in Python,
-  not bash -- see the comment in `rotate_old_slides()` for why.
+- Rotates `stories/` down to the 5 most recent sets (1-2 files each,
+  depending on whether any hazard had a probability area that day) before
+  the workflow commits, so the repo doesn't grow without bound. Done in
+  Python, not bash -- see the comment in `rotate_old_slides()` for why.
 - Delivers each slide to your phone via ntfy, in one of two ways depending
   on `SPC_STORY_RAW_BASE_URL`:
   - **set** (repo/path is public): sends `Attach: <raw.githubusercontent
@@ -191,9 +211,6 @@ project, not a tweak to this one.
 
 - A monthly heartbeat commit as a backstop against the winter-quiet-season
   gap described above.
-- A third slide breaking out tornado/hail/wind *probability* percentages
-  (SPC publishes these as separate GeoJSON files: `day1otlk_torn`,
-  `day1otlk_hail`, `day1otlk_wind`, same `.nolyr.geojson` pattern).
 - Auto-detecting "significant severe" hatched areas (10%+ chance of
   EF2+/2"+ hail/65+kt wind), which SPC marks separately from the
   categorical risk.
