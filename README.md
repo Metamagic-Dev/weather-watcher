@@ -1,7 +1,9 @@
 # SPC Outlook Story Generator
 
 Generates a set of Instagram Story-sized PNGs (1080x1920) whenever the SPC
-Day 1 Convective Outlook reaches **Enhanced** risk or higher:
+Day 1 Convective Outlook reaches **Enhanced** risk or higher, or whenever
+SPC draws a **hatched (significant, ~EF2+) tornado risk** area -- which can
+appear even on Marginal/Slight days:
 
 1. `..._1_map.png` -- the official categorical outlook map with a colored
    risk banner
@@ -23,8 +25,10 @@ new information. Splitting out tornado/wind/hail instead gives each hazard
 its own real data (peak %, its own map) rather than restating the
 categorical color key.
 
-If the highest risk is Marginal, Slight, or none, the script exits quietly
-and produces no files.
+If the highest categorical risk is below Enhanced and there's no hatched
+tornado area, the script produces no files -- but it still sends a single
+ntfy notification saying so, precisely so you know the check ran and there's
+nothing to worry about, rather than wondering whether it silently failed.
 
 **Generation still runs on your Mac (self-hosted runner). The slides are
 committed to the `stories` branch** under `stories/` (keeping only the 5
@@ -43,7 +47,10 @@ latest set straight from the branch. That commit does double duty:
   (`day1otlk_cat.nolyr.geojson`) and the official map graphic
   (`day1otlk.png`) -- no API key needed. Each hazard pulls the matching
   pair (e.g. `day1otlk_torn.nolyr.geojson` + `day1probotlk_torn.png`) the
-  same way.
+  same way. The hatched-tornado check is a separate SPC export,
+  `day1otlk_sigtorn.nolyr.geojson` -- a single feature per day, `DN=0`
+  with empty geometry when there's no hatched area, `DN=10` (`LABEL`
+  `"SIGN"`) with real polygons when there is.
 - Risk severity comes from SPC's own `DN` field, and colors come from the
   GeoJSON's own `fill` property, so it doesn't rely on a hardcoded color
   table that could drift from SPC's actual palette. The hazard slide's
@@ -54,10 +61,13 @@ latest set straight from the branch. That commit does double duty:
   depending on whether any hazard had a probability area that day) before
   the workflow commits, so the repo doesn't grow without bound. Done in
   Python, not bash -- see the comment in `rotate_old_slides()` for why.
-- Sends a single text-only ntfy notification ("ENH risk today -- 2 story
-  slide(s) ready in the repo.") -- no image attachments, so it's one push
-  instead of one per slide. Also fires a local macOS notification as a
-  fallback if it happens to run interactively on the Mac itself.
+- Sends a single text-only ntfy notification every run, trigger or not --
+  either "ENH risk today -- 2 story slide(s) ready in the repo." or, on a
+  quiet day, "Highest Day 1 categorical risk is 'SLGT' -- below Enhanced,
+  no hatched tornado risk. Nothing generated." No image attachments, so a
+  trigger run is one push instead of one per slide. Also fires a local
+  macOS notification as a fallback if it happens to run interactively on
+  the Mac itself.
 - The actual images are picked up separately by an iOS Shortcut that reads
   the `stories` branch (see "Getting slides onto your phone" below).
 
@@ -73,6 +83,13 @@ on the categorical file specifically. The script falls back to `LABEL`
 (e.g. `"ENH"`) if `LABEL2` is missing, so it won't break, but **run it
 once manually and check the output before trusting the schedule.**
 
+The `day1otlk_sigtorn.nolyr.geojson` schema (the hatched-tornado trigger),
+by contrast, *was* confirmed live: fetched the current empty-day response
+(single feature, `DN=0`, empty `GeometryCollection`) and cross-checked
+against a real hatched day's shapefile from SPC's archive
+(`day1otlk_20240506_1630_sigtorn.dbf`, the May 6, 2024 outbreak), which
+confirmed `DN=10`/`LABEL="SIGN"` on an active hatch.
+
 I also have not run the git-commit-and-push flow or the ntfy URL-attach
 path end-to-end -- both are built directly against documented behavior
 (GitHub Actions' default `GITHUB_TOKEN` push permissions, ntfy's
@@ -85,10 +102,10 @@ pip3 install --user -r requirements.txt
 python3 spc_story_generator.py
 ```
 
-Check `./stories/` for slides (only appears on Enhanced+ days -- to force a
-test run regardless of current risk, temporarily add a print of
-`top_label` and lower the trigger set, or just test on a day SPC has an
-Enhanced+ area up).
+Check `./stories/` for slides (only appears on Enhanced+ days or days with a
+hatched tornado area -- to force a test run regardless of current risk,
+temporarily add a print of `top_label`/`sig_tornado` and lower the trigger
+set, or just test on a day SPC has one of those up).
 
 ### One decision you need to make: public or private repo?
 
@@ -111,10 +128,13 @@ care about repo visibility:
    docs say this explicitly, since there's no sign-up and anyone who knows
    the topic name can subscribe or publish to it).
 2. Set it as a repo secret named `SPC_NTFY_TOPIC`.
-3. When new slides are generated, you'll get **one** text notification
-   ("ENH risk today -- 2 story slide(s) ready in the repo.").
-4. Run the **"Download Latest SPC Slides"** Shortcut (see below) to pull
-   the actual images down, then share straight to Instagram Stories.
+3. Every run sends **one** text notification, whether or not slides were
+   generated ("ENH risk today -- 2 story slide(s) ready in the repo." or a
+   "nothing generated" message on a quiet day), so you always know the
+   check ran.
+4. When slides were generated, run the **"Download Latest SPC Slides"**
+   Shortcut (see below) to pull the actual images down, then share straight
+   to Instagram Stories.
 
 The `stories` branch and the workflow artifact are both fallbacks if you
 ever miss a notification.
@@ -165,10 +185,10 @@ calls itself** every ~15s until a condition is met. Two shortcuts, but
 only one you ever run.
 
 **Watch out for:** dispatching only *runs* the workflow -- it doesn't
-guarantee new slides, since the script silently skips publishing on
-sub-Enhanced days. The design below also snapshots the `stories` branch
-listing before and after, so it can tell the difference between
-"finished, nothing new (risk didn't reach Enhanced)" and "finished, here
+guarantee new slides, since the script skips publishing (while still
+notifying) on days below Enhanced with no hatched tornado area. The design
+below also snapshots the `stories` branch listing before and after, so it
+can tell the difference between "finished, nothing new" and "finished, here
 are your slides" instead of just declaring victory once the run completes.
 
 **Helper shortcut -- "SPC Poll Run"** (receives a Dictionary as Shortcut
@@ -219,8 +239,8 @@ Input with keys `before_run_id` and `deadline`; calls itself until done):
    -- check GitHub Actions." → stop.
 8. Re-fetch the `stories` branch listing, sort descending, get item 1's
    `name` → `AfterSlideName`. **If** it equals `BeforeSlideName` → **Show
-   Alert** "Run finished, but risk didn't reach Enhanced -- nothing new to
-   download." → stop.
+   Alert** "Run finished, but risk didn't reach Enhanced and no hatched
+   tornado area -- nothing new to download." → stop.
 9. **Otherwise**: same download steps as the simple Shortcut -- the
    stamp-match filter over the freshly-sorted list, **Repeat with Each**
    → get `download_url` → **Get Contents of URL** → **Save to Photo
@@ -265,9 +285,10 @@ commits any new slides. Things to double check:
   runner is repo-scoped or org-scoped, so I can't tell you which case
   you're in.
 - **Winter/quiet-season gap.** The 60-day clock resets on *any* commit, and
-  this workflow only commits on Enhanced+ days. In a long stretch with no
-  Enhanced+ risk anywhere in CONUS (more plausible in winter), you could
-  still hit 60 quiet days and get auto-disabled -- the fix (not yet built)
+  this workflow only commits on days that trigger (Enhanced+, or a hatched
+  tornado area). In a long stretch with neither anywhere in CONUS (more
+  plausible in winter), you could still hit 60 quiet days and get
+  auto-disabled -- the fix (not yet built)
   would be a separate, infrequent heartbeat commit (e.g. monthly) as a
   backstop, independent of whether any story fired.
 - **Push races.** I added `concurrency: cancel-in-progress: false` so
@@ -322,6 +343,8 @@ project, not a tweak to this one.
 
 - A monthly heartbeat commit as a backstop against the winter-quiet-season
   gap described above.
-- Auto-detecting "significant severe" hatched areas (10%+ chance of
-  EF2+/2"+ hail/65+kt wind), which SPC marks separately from the
-  categorical risk.
+- Auto-detecting hatched significant-severe areas for **hail and wind**
+  (`day1otlk_sighail.nolyr.geojson` / `day1otlk_sigwind.nolyr.geojson`
+  exist alongside `day1otlk_sigtorn.nolyr.geojson` and follow the same
+  `DN=0`/`DN=10` convention) -- only the tornado one is wired in as a
+  trigger today.

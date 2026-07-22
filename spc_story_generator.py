@@ -3,7 +3,11 @@
 Generate Instagram Story slides from the SPC Day 1 Convective Outlook.
 
 Only produces output when the highest categorical risk is Enhanced (ENH),
-Moderate (MDT), or High (HIGH). Marginal/Slight/no-risk days are skipped.
+Moderate (MDT), or High (HIGH), OR when SPC has drawn a hatched
+("significant", ~EF2+) tornado risk area -- that can appear on days whose
+categorical risk is only Marginal/Slight, so it's checked independently.
+Otherwise the day is skipped, but a notification still goes out either way
+so silence doesn't get mistaken for the script having failed.
 
 Data sources (public, no API key required):
   - Categorical risk polygons: SPC's own GeoJSON export
@@ -23,6 +27,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 BASE = "https://www.spc.noaa.gov/products/outlook"
 CAT_GEOJSON_URL = f"{BASE}/day1otlk_cat.nolyr.geojson"
+SIG_TORN_GEOJSON_URL = f"{BASE}/day1otlk_sigtorn.nolyr.geojson"
 MAP_IMAGE_URL = f"{BASE}/day1otlk.png"
 
 # Per-hazard probability layers -- each has its own GeoJSON (for the peak
@@ -69,6 +74,16 @@ def highest_risk_feature(features):
     if not features:
         return None
     return max(features, key=lambda f: f["properties"].get("DN", 0))
+
+
+def has_significant_tornado_risk():
+    """
+    SPC's sigtorn layer is a single feature per day: DN=0 with empty
+    geometry when there's no hatched area, or DN=10 (LABEL "SIGN") with
+    real polygons when there is. Any nonzero DN means the hatch is present.
+    """
+    features = fetch_geojson(SIG_TORN_GEOJSON_URL).get("features", [])
+    return any(f["properties"].get("DN", 0) for f in features)
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -336,18 +351,18 @@ def send_text_notification(message):
         print(f"ntfy text notification failed: {e}", file=sys.stderr)
 
 
-def notify_with_slides(risk_display, slide_paths):
+def notify(message):
     """
-    Single text-only ntfy notification -- no attachments, so this is one
-    push instead of one-per-slide. Slides themselves live on the `stories`
-    branch (and an iOS Shortcut pulls the latest set from there), so ntfy
-    only needs to announce that they're ready.
+    Single text-only ntfy notification -- no attachments, so a multi-slide
+    run is one push instead of one-per-slide. Slides themselves live on the
+    `stories` branch (and an iOS Shortcut pulls the latest set from there),
+    so ntfy only needs to announce the outcome. Fires every run, trigger or
+    not, so silence never gets mistaken for the script having failed.
     """
-    message = f"{risk_display} risk today -- {len(slide_paths)} story slide(s) ready in the repo."
     send_text_notification(message)
     if sys.platform == "darwin":
         # Local fallback if this happens to run on the Mac itself (not your phone).
-        safe_msg = f"{risk_display} risk today -- slides ready.".replace('"', "'")
+        safe_msg = message.replace('"', "'")
         os.system(f'osascript -e \'display notification "{safe_msg}" with title "SPC Outlook"\'')
 
 
@@ -357,8 +372,12 @@ def main():
     top = highest_risk_feature(features)
     top_label = top["properties"].get("LABEL") if top else None
 
-    if top_label not in TRIGGER_LABELS:
-        print(f"Highest Day 1 categorical risk is '{top_label or 'none'}' -- below Enhanced, skipping.")
+    sig_tornado = has_significant_tornado_risk()
+
+    if top_label not in TRIGGER_LABELS and not sig_tornado:
+        message = f"Highest Day 1 categorical risk is '{top_label or 'none'}' -- below Enhanced, no hatched tornado risk. Nothing generated."
+        print(message)
+        notify(message)
         return
 
     props = top["properties"]
@@ -395,7 +414,11 @@ def main():
         paths.append(path)
 
     rotate_old_slides(OUTPUT_DIR, KEEP_RECENT)
-    notify_with_slides(risk_display, paths)
+
+    reason = risk_display
+    if top_label not in TRIGGER_LABELS and sig_tornado:
+        reason = f"{risk_display} (hatched significant tornado risk)"
+    notify(f"{reason} today -- {len(paths)} story slide(s) ready in the repo.")
 
 
 if __name__ == "__main__":
