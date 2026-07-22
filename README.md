@@ -1,22 +1,35 @@
 # SPC Outlook Story Generator
 
-Generates a set of Instagram Story-sized PNGs (1080x1920) whenever the SPC
-Day 1 Convective Outlook reaches **Enhanced** risk or higher, or whenever
-SPC draws a **hatched (significant, ~EF2+) tornado risk** area -- which can
-appear even on Marginal/Slight days:
+Generates a set of Instagram Story-sized PNGs (1080x1920) for each of SPC's
+**Day 1, Day 2, and Day 3 Convective Outlooks**, checked independently.
+A given day only produces slides when that day's outlook reaches
+**Enhanced** risk or higher, or whenever SPC draws a **hatched
+(significant, ~EF2+) tornado risk** area for that day -- which can appear
+even on Marginal/Slight days (Day 3 doesn't publish this hatched layer, so
+it's checked by categorical risk alone). Day 4-8 isn't covered: SPC doesn't
+publish a static map image for that product, and it uses a different,
+probabilistic-only risk scheme (15/30/40%/MDT) instead of the
+ENH/MDT/HIGH categories this script's trigger is built on.
 
-1. `..._1_map.png` -- the official categorical outlook map with a colored
-   risk banner
-2. `..._2_hazards.png` -- every hazard (tornado/wind/hail) that actually has
-   a probability area today, each with SPC's own probability map graphic and
-   a pill badge showing that hazard's peak percentage:
+Each triggered day gets:
+
+1. `..._dayN_map.png` -- that day's official categorical outlook map with a
+   colored risk banner and a bold "EFFECTIVE ..." callout showing SPC's own
+   valid/expire window for the risk
+2. `..._dayN_hazards.png` -- **Day 1 and Day 2 only** (Day 3 doesn't publish
+   a per-hazard breakdown): every hazard (tornado/wind/hail) that actually
+   has a probability area that day, each with SPC's own probability map
+   graphic and a pill badge showing that hazard's peak percentage:
    - **3 hazards present**: the most prominent one (highest peak
      percentage) is a full-width hero card on top; the other two sit side
      by side below it.
    - **1-2 hazards present**: stacked full width instead.
-   - A hazard with no probability contour at all today (e.g. no wind risk
-     drawn anywhere) is left out entirely, and this slide is skipped if
-     none of the three have any area.
+   - A hazard with no probability contour at all that day (e.g. no wind
+     risk drawn anywhere) is left out entirely, and this slide is skipped
+     if none of the three have any area.
+
+Slides from every triggered day are combined into one run -- e.g. if only
+Day 2 clears the bar, you get 1-2 slides; if all three days do, up to 6.
 
 There's intentionally no separate "risk breakdown"/legend slide -- SPC's own
 map graphics already bake a color-key legend into the corner of the image,
@@ -25,10 +38,11 @@ new information. Splitting out tornado/wind/hail instead gives each hazard
 its own real data (peak %, its own map) rather than restating the
 categorical color key.
 
-If the highest categorical risk is below Enhanced and there's no hatched
-tornado area, the script produces no files -- but it still sends a single
-ntfy notification saying so, precisely so you know the check ran and there's
-nothing to worry about, rather than wondering whether it silently failed.
+If none of Day 1/2/3 reach Enhanced and none have a hatched tornado area,
+the script produces no files -- but it still sends a single ntfy
+notification summarizing all three days, precisely so you know the check
+ran and there's nothing to worry about, rather than wondering whether it
+silently failed.
 
 **Generation still runs on your Mac (self-hosted runner). The slides are
 committed to the `stories` branch** under `stories/` (keeping only the 5
@@ -43,28 +57,42 @@ latest set straight from the branch. That commit does double duty:
 
 ## How it works
 
-- Pulls the categorical risk polygons from SPC's public GeoJSON export
-  (`day1otlk_cat.nolyr.geojson`) and the official map graphic
-  (`day1otlk.png`) -- no API key needed. Each hazard pulls the matching
-  pair (e.g. `day1otlk_torn.nolyr.geojson` + `day1probotlk_torn.png`) the
-  same way. The hatched-tornado check is a separate SPC export,
-  `day1otlk_sigtorn.nolyr.geojson` -- a single feature per day, `DN=0`
+- Checks Day 1, Day 2, and Day 3 independently (see `DAY_CONFIGS` in
+  `spc_story_generator.py`), each against its own categorical GeoJSON
+  export (e.g. `day2otlk_cat.nolyr.geojson`) and official map graphic
+  (e.g. `day2otlk.png`) -- no API key needed. Day 1 and Day 2 each pull a
+  matching per-hazard pair too (e.g. `day2otlk_torn.nolyr.geojson` +
+  `day2probotlk_torn.png`); Day 3 doesn't publish that breakdown, so its
+  `hazards` list is empty and its hazards slide is skipped entirely. The
+  hatched-tornado check is a separate SPC export per day (e.g.
+  `day2otlk_sigtorn.nolyr.geojson`; Day 3 doesn't publish one, so it's
+  checked by categorical risk alone) -- a single feature per day, `DN=0`
   with empty geometry when there's no hatched area, `DN=10` (`LABEL`
   `"SIGN"`) with real polygons when there is.
+- Each slide's "EFFECTIVE ..." callout and its small issued-time subtitle
+  both come from SPC's own `VALID_ISO`/`EXPIRE_ISO`/`ISSUE_ISO` fields on
+  the outlook's own top risk feature -- not the time this script happens to
+  run -- so they reflect the actual bulletin, not the polling cadence.
 - Risk severity comes from SPC's own `DN` field, and colors come from the
   GeoJSON's own `fill` property, so it doesn't rely on a hardcoded color
   table that could drift from SPC's actual palette. The hazard slide's
-  hero (when all 3 are present) is picked by comparing `DN` too.
+  hero (when all 3 are present) is picked by comparing `DN` too. On a quiet
+  day, SPC's per-hazard GeoJSON still returns one placeholder feature
+  (`DN=0`, e.g. `LABEL` `"Less Than 2% All Areas"`, no fill color) rather
+  than an empty list -- the script treats `DN=0` the same as "nothing
+  drawn" so it doesn't try to render that placeholder.
 - Renders slides with a bundled DejaVu Sans font (in `fonts/`) so text
   looks identical regardless of what OS actually runs the script.
-- Rotates `stories/` down to the 5 most recent sets (1-2 files each,
-  depending on whether any hazard had a probability area that day) before
-  the workflow commits, so the repo doesn't grow without bound. Done in
-  Python, not bash -- see the comment in `rotate_old_slides()` for why.
-- Sends a single text-only ntfy notification every run, trigger or not --
-  either "ENH risk today -- 2 story slide(s) ready in the repo." or, on a
-  quiet day, "Highest Day 1 categorical risk is 'SLGT' -- below Enhanced,
-  no hatched tornado risk. Nothing generated." No image attachments, so a
+- Rotates `stories/` down to the 5 most recent *runs* (1-6 files each,
+  depending on how many of the three days triggered and whether each had a
+  hazard breakdown) before the workflow commits, so the repo doesn't grow
+  without bound. Done in Python, not bash -- see the comment in
+  `rotate_old_slides()` for why.
+- Sends a single text-only ntfy notification every run, trigger or not,
+  summarizing every day checked -- e.g. "Day 1: Enhanced Risk. Day 2: 'SLGT'
+  -- below Enhanced, no hatched tornado risk. Day 3: 'TSTM' -- below
+  Enhanced, no hatched tornado risk. -- 2 story slide(s) ready in the
+  repo." No image attachments, so a
   trigger run is one push instead of one per slide. Also fires a local
   macOS notification as a fallback if it happens to run interactively on
   the Mac itself.
@@ -128,10 +156,12 @@ care about repo visibility:
    docs say this explicitly, since there's no sign-up and anyone who knows
    the topic name can subscribe or publish to it).
 2. Set it as a repo secret named `SPC_NTFY_TOPIC`.
-3. Every run sends **one** text notification, whether or not slides were
-   generated ("ENH risk today -- 2 story slide(s) ready in the repo." or a
-   "nothing generated" message on a quiet day), so you always know the
-   check ran.
+3. Every run sends **one** text notification summarizing all three days,
+   whether or not any slides were generated (e.g. "Day 1: Enhanced Risk.
+   Day 2: 'SLGT' -- below Enhanced, no hatched tornado risk. Day 3: 'TSTM'
+   -- below Enhanced, no hatched tornado risk. -- 2 story slide(s) ready in
+   the repo." or an all-quiet "nothing generated" message), so you always
+   know the check ran.
 4. When slides were generated, run the **"Download Latest SPC Slides"**
    Shortcut (see below) to pull the actual images down, then share straight
    to Instagram Stories.
@@ -143,10 +173,11 @@ ever miss a notification.
 
 Build this in the Shortcuts app to pull the newest set of PNGs straight
 from the `stories` branch on demand (no attachments, no ntfy size/expiry
-limits -- it just reads the branch). The slide count varies day to day (1
-file if no hazard had a probability area, 2 if the hazards slide was also
-generated), so this filters by the shared timestamp prefix rather than
-assuming a fixed count:
+limits -- it just reads the branch). The slide count varies run to run --
+anywhere from 1 file (only one day triggered, no hazard breakdown) up to 6
+(all three days triggered, Day 1 and Day 2 both had a hazards slide) --
+so this filters by the shared timestamp prefix rather than assuming a
+fixed count:
 
 1. **Get Contents of URL** (GET)
    `https://api.github.com/repos/Metamagic-Dev/weather-watcher/contents/stories?ref=stories`
@@ -256,7 +287,12 @@ necessarily mean something's wrong.
 
 `.github/workflows/spc-outlook-story.yml` runs on your self-hosted runner
 ~30-40 min after each of SPC's five daily Day 1 issuance times, then
-commits any new slides. Things to double check:
+commits any new slides. Day 2 (issued ~0600Z/1730Z) and Day 3 (issued
+~0730Z) are checked on that same Day 1-driven schedule rather than their
+own -- each run just re-fetches whatever Day 2/3 outlook is currently live,
+so a Day 2/3 update between polls won't generate a fresh story until the
+next scheduled check, same caveat as an out-of-cycle Day 1 upgrade (see
+"SPC data itself" below). Things to double check:
 
 - `runs-on: [self-hosted, macOS, ARM64]` -- change the labels to match
   whatever you actually tagged your M1 runner with.
@@ -322,6 +358,7 @@ commits any new slides. Things to double check:
   polls won't trigger a fresh story until the next scheduled check.
 - `LABEL2` (the human-readable risk text) isn't 100% confirmed to exist on
   the categorical GeoJSON specifically -- falls back to `LABEL` if missing.
+  Applies to Day 1, 2, and 3 alike since they share the same schema.
 
 **Image/Instagram specifics**
 - Instagram frequently re-compresses shared images and can crop/pad
@@ -348,3 +385,9 @@ project, not a tweak to this one.
   exist alongside `day1otlk_sigtorn.nolyr.geojson` and follow the same
   `DN=0`/`DN=10` convention) -- only the tornado one is wired in as a
   trigger today.
+- Extending to SPC's **Day 4-8 outlook** for a full week of lead time.
+  Deliberately left out of this round: that product has no static map
+  image (SPC renders it dynamically in-browser, so a map slide would mean
+  building a renderer from the raw polygon GeoJSON), and its risk scheme is
+  probabilistic-only (15/30/40%/MDT) rather than categorical, so it'd need
+  its own trigger rule instead of reusing `TRIGGER_LABELS`.
