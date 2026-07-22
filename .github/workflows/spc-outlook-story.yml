@@ -46,7 +46,7 @@ jobs:
             git -C stories-branch rm -rf . >/dev/null 2>&1 || true
           fi
 
-      - name: Generate story slides if risk is Enhanced+
+      - name: Generate story slides if risk is Enhanced+ or a hatched tornado area is present
         env:
           SPC_STORY_OUTPUT_DIR: ${{ github.workspace }}/stories-branch/stories
           SPC_NTFY_TOPIC: ${{ secrets.SPC_NTFY_TOPIC }}
