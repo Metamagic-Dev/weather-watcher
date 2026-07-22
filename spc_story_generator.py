@@ -523,9 +523,8 @@ def main():
         summaries.append(f"Day {day}: {reason}.")
 
     if not slides:
-        message = "🌤️ No ENH+ in the 3 day outlook -- " + " ".join(summaries)
-        print(message)
-        notify(message)
+        print(" ".join(summaries))
+        notify("🌤️ No ENH+ in the 3 day outlook")
         return
 
     stamp = now.strftime("%Y%m%d_%H%M")
@@ -538,7 +537,8 @@ def main():
 
     rotate_old_slides(OUTPUT_DIR, KEEP_RECENT)
 
-    notify("🚨 Outlook images generated! " + " ".join(summaries) + f" -- {len(paths)} story slide(s) ready in the repo.")
+    print(" ".join(summaries))
+    notify("🚨 Outlook images generated!")
 
 
 if __name__ == "__main__":
