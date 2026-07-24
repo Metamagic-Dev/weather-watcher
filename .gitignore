@@ -1,1 +1,4 @@
 stories-branch/
+
+# Git worktrees
+.claude/worktrees/
