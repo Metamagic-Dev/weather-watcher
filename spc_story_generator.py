@@ -32,10 +32,15 @@ import os
 import re
 import sys
 import datetime
+from zoneinfo import ZoneInfo
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
 BASE = "https://www.spc.noaa.gov/products/outlook"
+
+# Displayed instead of UTC so viewers don't have to convert. ZoneInfo tracks
+# DST automatically, so %Z always renders the correct EDT/EST.
+EASTERN = ZoneInfo("America/New_York")
 
 # Slide order for the hazards-combined slide follows SPC's own convention
 # (tornado, wind, hail).
@@ -123,12 +128,14 @@ def highest_risk_feature(features):
 def format_effective_window(props):
     """SPC's own VALID/EXPIRE timestamps for the featured risk polygon --
     i.e. when the risk is actually in effect, which can differ from both
-    the bulletin's issuance time and whenever this script happens to run."""
-    start = datetime.datetime.fromisoformat(props["VALID_ISO"])
-    end = datetime.datetime.fromisoformat(props["EXPIRE_ISO"])
+    the bulletin's issuance time and whenever this script happens to run.
+    Shown in Eastern (instead of UTC) so viewers don't have to convert it
+    themselves."""
+    start = datetime.datetime.fromisoformat(props["VALID_ISO"]).astimezone(EASTERN)
+    end = datetime.datetime.fromisoformat(props["EXPIRE_ISO"]).astimezone(EASTERN)
     if start.date() == end.date():
-        return f"EFFECTIVE {start:%H:%M}-{end:%H:%M} UTC {start:%b %d}".upper()
-    return f"EFFECTIVE {start:%b %d %H:%M} - {end:%b %d %H:%M} UTC".upper()
+        return f"EFFECTIVE {start:%H:%M}-{end:%H:%M} {start:%Z} {start:%b %d}".upper()
+    return f"EFFECTIVE {start:%b %d %H:%M} - {end:%b %d %H:%M} {end:%Z}".upper()
 
 
 def has_significant_tornado_risk(sigtorn_url):
@@ -464,8 +471,8 @@ def build_day_slides(day_cfg, top):
     slide. Returns (list of (suffix, slide) pairs, risk_display)."""
     day = day_cfg["day"]
     props = top["properties"]
-    issue_dt = datetime.datetime.fromisoformat(props["ISSUE_ISO"])
-    issued_label = f"Day {day} Outlook -- Issued {issue_dt:%Y-%m-%d %H:%M} UTC"
+    issue_dt = datetime.datetime.fromisoformat(props["ISSUE_ISO"]).astimezone(EASTERN)
+    issued_label = f"Day {day} Outlook -- Issued {issue_dt:%Y-%m-%d %H:%M} {issue_dt:%Z}"
     effective_text = format_effective_window(props)
     risk_display = props.get("LABEL2", props["LABEL"])
     day_eyebrow = f"SPC DAY {day} CONVECTIVE OUTLOOK"
