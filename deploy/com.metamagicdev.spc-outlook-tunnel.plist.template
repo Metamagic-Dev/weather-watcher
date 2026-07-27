@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.metamagicdev.spc-outlook-tunnel</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__CLOUDFLARED__</string>
+        <string>tunnel</string>
+        <string>run</string>
+        <string>spc-outlook</string>
+    </array>
+
+    <!-- Reads ~/.cloudflared/config.yml by default -- see
+         cloudflared-config.yml in this directory. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__REPO_DIR__/deploy/logs/tunnel.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO_DIR__/deploy/logs/tunnel.err.log</string>
+</dict>
+</plist>

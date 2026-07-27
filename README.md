@@ -44,16 +44,17 @@ notification summarizing all three days, precisely so you know the check
 ran and there's nothing to worry about, rather than wondering whether it
 silently failed.
 
-**Generation still runs on your Mac (self-hosted runner). The slides are
-committed to the `stories` branch** under `stories/` (keeping only the 5
-most recent sets), and a single [ntfy](https://ntfy.sh) text notification
-pings your phone when new ones are ready -- an iOS Shortcut then pulls the
-latest set straight from the branch. That commit does double duty:
-
-- it's what makes the images available at all (the iOS Shortcut reads
-  straight from here), and
-- it's a real commit, which is what keeps GitHub from auto-disabling this
-  scheduled workflow after 60 quiet days.
+**Generation runs on your Mac (self-hosted runner), and the slides never
+leave it.** GitHub only hosts the script and the Actions automation --
+pictures are written straight to a folder on the Mac, which a small local
+web server (`site/server.py`) serves over a **Cloudflare Tunnel**, so you
+can open a private URL on your phone and download the latest set. Each
+triggered run **deletes whatever the previous run left on disk** before
+writing the new set (see `clear_output_dir()`) -- there's no archive, only
+the latest pictures are ever present on the device. A single
+[ntfy](https://ntfy.sh) text notification (with the site link) pings your
+phone when new ones are ready. See "Local download site (Cloudflare
+Tunnel)" below for the one-time setup.
 
 ## How it works
 
@@ -83,21 +84,26 @@ latest set straight from the branch. That commit does double duty:
   drawn" so it doesn't try to render that placeholder.
 - Renders slides with a bundled DejaVu Sans font (in `fonts/`) so text
   looks identical regardless of what OS actually runs the script.
-- Rotates `stories/` down to the 5 most recent *runs* (1-6 files each,
+- On a triggered run, `clear_output_dir()` deletes every file already in
+  the output folder before the new slides are written -- so the folder (and
+  the site) only ever contains the single latest run's files (1-6 images,
   depending on how many of the three days triggered and whether each had a
-  hazard breakdown) before the workflow commits, so the repo doesn't grow
-  without bound. Done in Python, not bash -- see the comment in
-  `rotate_old_slides()` for why.
+  hazard breakdown), never a mix of two runs and never an archive. A run
+  that doesn't trigger leaves the previous set in place untouched, so the
+  site always has *something* current to show.
+- Also writes an `index.html` download page into the output folder
+  alongside the images (see `write_index_html()`) -- this is what
+  `site/server.py` serves at `/`.
 - Sends a single text-only ntfy notification every run, trigger or not,
   summarizing every day checked -- e.g. "Day 1: Enhanced Risk. Day 2: 'SLGT'
   -- below Enhanced, no hatched tornado risk. Day 3: 'TSTM' -- below
-  Enhanced, no hatched tornado risk. -- 2 story slide(s) ready in the
-  repo." No image attachments, so a
-  trigger run is one push instead of one per slide. Also fires a local
-  macOS notification as a fallback if it happens to run interactively on
-  the Mac itself.
-- The actual images are picked up separately by an iOS Shortcut that reads
-  the `stories` branch (see "Getting slides onto your phone" below).
+  Enhanced, no hatched tornado risk." plus the site URL when
+  `SPC_STORY_SITE_URL` is set. No image attachments, so a trigger run is
+  one push instead of one per slide. Also fires a local macOS notification
+  as a fallback if it happens to run interactively on the Mac itself.
+- The actual images are picked up by visiting the Cloudflare Tunnel URL
+  (see "Local download site (Cloudflare Tunnel)" below) -- nothing is ever
+  pushed to GitHub.
 
 ## What I verified vs. assumed
 
@@ -118,10 +124,10 @@ against a real hatched day's shapefile from SPC's archive
 (`day1otlk_20240506_1630_sigtorn.dbf`, the May 6, 2024 outbreak), which
 confirmed `DN=10`/`LABEL="SIGN"` on an active hatch.
 
-I also have not run the git-commit-and-push flow or the ntfy URL-attach
-path end-to-end -- both are built directly against documented behavior
-(GitHub Actions' default `GITHUB_TOKEN` push permissions, ntfy's
-attach-from-URL semantics), but test both once before relying on them.
+I also have not run the heartbeat-commit-and-push flow or the ntfy
+notification path end-to-end -- both are built directly against documented
+behavior (GitHub Actions' default `GITHUB_TOKEN` push permissions, ntfy's
+text-push semantics), but test both once before relying on them.
 
 ## Setup
 
@@ -130,215 +136,122 @@ pip3 install --user -r requirements.txt
 python3 spc_story_generator.py
 ```
 
-Check `./stories/` for slides (only appears on Enhanced+ days or days with a
-hatched tornado area -- to force a test run regardless of current risk,
-temporarily add a print of `top_label`/`sig_tornado` and lower the trigger
-set, or just test on a day SPC has one of those up).
+Check `~/spc-outlook-site/stories/` for slides (only appears on Enhanced+
+days or days with a hatched tornado area -- to force a test run regardless
+of current risk, temporarily add a print of `top_label`/`sig_tornado` and
+lower the trigger set, or just test on a day SPC has one of those up). Set
+`SPC_STORY_OUTPUT_DIR` to point somewhere else if you don't want the
+default location.
 
-### One decision you need to make: public or private repo?
+### Local download site (Cloudflare Tunnel)
 
-This now matters for the **"Download Latest SPC Slides" iOS Shortcut**
-(below), not for ntfy -- ntfy only ever sends a text ping, so it doesn't
-care about repo visibility:
+The Mac needs two things running **continuously in the background**,
+independent of when GitHub Actions happens to run the generator:
+`site/server.py` (serves the pictures) and `cloudflared` (exposes that
+server to the internet). `deploy/install.sh` installs both as launchd
+services so they start at login and restart if they ever crash.
 
-- **Public repo (or you're fine making just this narrow slice public):**
-  the Shortcut can hit `api.github.com` unauthenticated. Given the content
-  is just NOAA's own public map data, this is what I'd default to unless
-  you have a reason to keep the repo private.
-- **Private repo:** the Shortcut's "Get Contents of URL" steps need a
-  `Authorization: Bearer <token>` header added (a GitHub personal access
-  token with read access to this repo), or the API calls will 404/401.
+One-time setup, run directly on the Mac Mini:
 
-### Getting slides onto your phone
+1. **Install cloudflared**: `brew install cloudflared`
+2. **Authenticate**: `cloudflared tunnel login` -- opens a browser to pick
+   the Cloudflare account/zone (domain) this tunnel will attach to.
+3. **Create the tunnel**: `cloudflared tunnel create spc-outlook` -- prints
+   a UUID and writes credentials to `~/.cloudflared/<UUID>.json`.
+4. **Route a hostname to it**:
+   `cloudflared tunnel route dns spc-outlook spc-outlook.yourdomain.com`
+   (any subdomain of a domain in your Cloudflare account).
+5. **Configure the tunnel**: copy `deploy/cloudflared-config.yml` to
+   `~/.cloudflared/config.yml` and fill in the tunnel UUID, the
+   credentials-file path, and the hostname from steps 3-4.
+6. **Install the services**: from a checkout of this repo on the Mac, run
+   `./deploy/install.sh`. It generates the two launchd plists from the
+   templates in `deploy/` (filling in absolute paths for `python3`,
+   `cloudflared`, and this checkout), installs them to
+   `~/Library/LaunchAgents/`, and starts both. Logs land in
+   `deploy/logs/`.
+7. **Verify**: visit `https://spc-outlook.yourdomain.com` -- you should see
+   the download page (empty until the first slides are generated).
+8. **Optional**: add that URL as a repository variable named
+   `SPC_STORY_SITE_URL` so it gets appended to the ntfy notification --
+   tapping the notification then takes you straight to the page.
 
-1. Install the [ntfy app](https://ntfy.sh/) on your phone, subscribe to a
-   topic name of your choosing (**treat it like a password** -- ntfy's own
-   docs say this explicitly, since there's no sign-up and anyone who knows
-   the topic name can subscribe or publish to it).
-2. Set it as a repo secret named `SPC_NTFY_TOPIC`.
-3. Every run sends **one** text notification summarizing all three days,
-   whether or not any slides were generated (e.g. "Day 1: Enhanced Risk.
-   Day 2: 'SLGT' -- below Enhanced, no hatched tornado risk. Day 3: 'TSTM'
-   -- below Enhanced, no hatched tornado risk. -- 2 story slide(s) ready in
-   the repo." or an all-quiet "nothing generated" message), so you always
-   know the check ran.
-4. When slides were generated, run the **"Download Latest SPC Slides"**
-   Shortcut (see below) to pull the actual images down, then share straight
-   to Instagram Stories.
-
-The `stories` branch and the workflow artifact are both fallbacks if you
-ever miss a notification.
-
-### iOS Shortcut: "Download Latest SPC Slides"
-
-Build this in the Shortcuts app to pull the newest set of PNGs straight
-from the `stories` branch on demand (no attachments, no ntfy size/expiry
-limits -- it just reads the branch). The slide count varies run to run --
-anywhere from 1 file (only one day triggered, no hazard breakdown) up to 6
-(all three days triggered, Day 1 and Day 2 both had a hazards slide) --
-so this filters by the shared timestamp prefix rather than assuming a
-fixed count:
-
-1. **Get Contents of URL** (GET)
-   `https://api.github.com/repos/Metamagic-Dev/weather-watcher/contents/stories?ref=stories`
-   -- note the `?ref=stories`, since slides live on the `stories` branch,
-   not `main`. Returns a JSON array of every file in `stories/`, each with
-   a `name` and a `download_url`.
-2. **Sort List** -- sort that array by the `name` key, **descending**.
-   Filenames encode `spc_story_YYYYMMDD_HHMM_...`, so the newest set sorts
-   to the top.
-3. **Get Item from List** -- index 1 of the sorted list → **Match Text**
-   its `name` against `spc_story_(\d{8}_\d{4})_` → capture Group 1 as
-   `LatestStamp`.
-4. **Repeat with Each** item in the *full* sorted list (not just the top
-   one):
-   - **Match Text** the item's `name` against the same
-     `spc_story_(\d{8}_\d{4})_` pattern → Group 1 as `ItemStamp`.
-   - **If** `ItemStamp` = `LatestStamp`:
-     - **Get Dictionary Value** `download_url` on the item.
-     - **Get Contents of URL** using that `download_url` -- downloads the
-       actual PNG bytes.
-     - **Save to Photo Album** (or **Quick Look**, if you'd rather preview
-       first).
-   - Non-matching items just get skipped -- since the list is sorted
-     descending, every match is guaranteed to come before the first
-     mismatch, so there's no need for an early exit.
-5. Optionally add a **Show Notification** or **Quick Look** at the end so
-   you know it finished.
-
-### iOS Shortcut (advanced): trigger a run, wait for it to publish, then download
-
-The Dispatch Workflow action only fires the run -- it doesn't wait for it
-or tell you which run it started, so "wait until published" has to be
-built as a small polling loop. Shortcuts doesn't have a native "repeat
-until" action, so the standard way to do this is a **helper shortcut that
-calls itself** every ~15s until a condition is met. Two shortcuts, but
-only one you ever run.
-
-**Watch out for:** dispatching only *runs* the workflow -- it doesn't
-guarantee new slides, since the script skips publishing (while still
-notifying) on days below Enhanced with no hatched tornado area. The design
-below also snapshots the `stories` branch listing before and after, so it
-can tell the difference between "finished, nothing new" and "finished, here
-are your slides" instead of just declaring victory once the run completes.
-
-**Helper shortcut -- "SPC Poll Run"** (receives a Dictionary as Shortcut
-Input with keys `before_run_id` and `deadline`; calls itself until done):
-
-1. **Get Dictionary Value** `before_run_id` and `deadline` from Shortcut
-   Input.
-2. **Get Contents of URL** (GET)
-   `https://api.github.com/repos/Metamagic-Dev/weather-watcher/actions/workflows/spc-outlook-story.yml/runs?event=workflow_dispatch&per_page=1`
-   -- scoped to this workflow file and to manual (`workflow_dispatch`)
-   runs only, so it can't get confused with the cron-scheduled runs.
-3. **Get Dictionary Value** `workflow_runs` → **Get Item from List** index 1
-   → this is the latest manual run. Pull its `id` and `status` values.
-4. **If** that run's `id` equals `before_run_id` (no new run has shown up
-   in the API yet) **or** `status` isn't `"completed"`:
-   - **Get Current Date** -- if it's past `deadline`, **Stop This
-     Shortcut** with output `"timeout"`.
-   - Otherwise, **Wait** 15 seconds, then **Run Shortcut** → "SPC Poll
-     Run" → passing the *same* Shortcut Input through unchanged, then
-     **Stop This Shortcut** with output = that call's result.
-5. **Otherwise** (a new run exists and it's completed): **Get Dictionary
-   Value** `conclusion` from that run, and **Stop This Shortcut** with
-   output = the conclusion (`"success"`, `"failure"`, etc.).
-
-**Main shortcut -- "SPC Publish & Download"** (this is the one you run):
-
-1. **Get Contents of URL** the `stories` branch contents endpoint (same
-   URL as the simple Shortcut above, with `?ref=stories`) → **Sort List**
-   by `name` descending → **Get Item from List** index 1 → **Get
-   Dictionary Value** `name` → save as `BeforeSlideName`.
-2. **Get Contents of URL** the same scoped runs endpoint from step 2 above
-   → `workflow_runs` → item 1 → `id` → save as `BeforeRunID` (whatever the
-   last manual run's ID was, so the poller can recognize a *new* one).
-3. **Dispatch Workflow** (your existing action) -- Owner
-   `Metamagic-Dev`, Workflow ID `spc-outlook-story.yml`, Repository
-   `weather-watcher`, Branch `main` (the workflow file itself still lives
-   on `main` -- only the generated slides go to `stories`).
-4. **Get Current Date** → add 6 minutes → format as ISO 8601 → save as
-   `Deadline`. (6 minutes is generous slack for runner pickup + image
-   fetch + git push when the Mac's already awake; bump it up if the Mac
-   sometimes needs to wake from sleep first.)
-5. **Dictionary**: `{"before_run_id": BeforeRunID, "deadline": Deadline}`
-   → **Run Shortcut** → "SPC Poll Run" with this as input → save result as
-   `PollResult`.
-6. **If** `PollResult` = `"timeout"` → **Show Alert** "Still running after
-   6 minutes -- check the Actions tab." → stop.
-7. **If** `PollResult` ≠ `"success"` → **Show Alert** "Workflow run failed
-   -- check GitHub Actions." → stop.
-8. Re-fetch the `stories` branch listing, sort descending, get item 1's
-   `name` → `AfterSlideName`. **If** it equals `BeforeSlideName` → **Show
-   Alert** "Run finished, but risk didn't reach Enhanced and no hatched
-   tornado area -- nothing new to download." → stop.
-9. **Otherwise**: same download steps as the simple Shortcut -- the
-   stamp-match filter over the freshly-sorted list, **Repeat with Each**
-   → get `download_url` → **Get Contents of URL** → **Save to Photo
-   Album**.
-
-One more caveat specific to this version: if the Mac's asleep when you
-dispatch, the job just sits queued on GitHub's side (self-hosted runners
-only pick up jobs while online) -- the 6-minute deadline is a guess for
-"runner already awake," not a hard guarantee, so a timeout here doesn't
-necessarily mean something's wrong.
+Nothing about this setup is tied to a GitHub Actions run -- the generator
+(triggered by the schedule below) just needs to write into the same folder
+`site/server.py` is serving, which is why both default to
+`~/spc-outlook-site/stories` unless you override `SPC_STORY_OUTPUT_DIR` in
+both places. Since the download page and the images themselves are marked
+`no-store`, refreshing the browser after a new run always shows the latest
+set immediately.
 
 ### Scheduling via GitHub Actions
 
 `.github/workflows/spc-outlook-story.yml` runs on your self-hosted runner
-~30-40 min after each of SPC's five daily Day 1 issuance times, then
-commits any new slides. Day 2 (issued ~0600Z/1730Z) and Day 3 (issued
-~0730Z) are checked on that same Day 1-driven schedule rather than their
-own -- each run just re-fetches whatever Day 2/3 outlook is currently live,
-so a Day 2/3 update between polls won't generate a fresh story until the
-next scheduled check, same caveat as an out-of-cycle Day 1 upgrade (see
-"SPC data itself" below). Things to double check:
+~30-40 min after each of SPC's five daily Day 1 issuance times. Day 2
+(issued ~0600Z/1730Z) and Day 3 (issued ~0730Z) are checked on that same
+Day 1-driven schedule rather than their own -- each run just re-fetches
+whatever Day 2/3 outlook is currently live, so a Day 2/3 update between
+polls won't generate a fresh story until the next scheduled check, same
+caveat as an out-of-cycle Day 1 upgrade (see "SPC data itself" below).
+Things to double check:
 
 - `runs-on: [self-hosted, macOS, ARM64]` -- change the labels to match
   whatever you actually tagged your M1 runner with.
 - `permissions: contents: write` is set at the workflow level so the
-  default `GITHUB_TOKEN` can push -- if your org/repo has tightened default
-  token permissions below this, the push step will fail with a permissions
-  error rather than silently doing nothing.
-- Add `SPC_NTFY_TOPIC` as a repository secret.
+  default `GITHUB_TOKEN` can push the heartbeat commit (see below) -- if
+  your org/repo has tightened default token permissions below this, that
+  step will fail with a permissions error rather than silently doing
+  nothing. No picture ever gets committed, so this permission is
+  intentionally narrower in effect than it looks.
+- Add `SPC_NTFY_TOPIC` as a repository secret, and optionally
+  `SPC_STORY_SITE_URL` as a repository variable (see step 8 above).
+- **Heartbeat commit, not a picture commit:** every run (trigger or not)
+  touches a one-line timestamp in `heartbeat.txt` on the separate,
+  unprotected `stories` branch and pushes it. This is the *only* thing
+  that still gets committed to GitHub -- it exists purely so GitHub sees
+  commit activity and doesn't auto-disable the schedule after 60 quiet
+  days (a real risk in a long stretch with no Enhanced+ weather anywhere
+  in CONUS, e.g. winter). If you don't care about that risk, you can
+  delete this step, but there's no other reason to keep it since the
+  actual slides never go there.
 
 ## Blind spots / things I haven't solved for you
 
-**The repo-commit approach itself (new, from this round)**
-- **Repo bloat.** Rotation keeps the *working tree* to 5 sets, but git
-  history keeps every blob from every commit forever by default. At maybe
-  1-3 MB per slide x 2 slides x however many Enhanced+ days per year, this
-  is a slow trickle, not a flood -- but if this lives inside your
-  myCheckbook repo, every collaborator/CI clone carries that history
-  forever. I'd genuinely recommend a **separate, dedicated repo** just for
-  this bot rather than folding it into myCheckbook, specifically to keep
-  weather-map history from bloating your app's repo.
-- **That means a second self-hosted runner registration.** Self-hosted
-  runners are registered per-repo (or per-org, if you have one) -- if you
-  split this into its own repo, you'll need to register your Mac as a
-  runner there too (same machine, second runner service/token), not just
-  reuse the myCheckbook registration. I don't know whether your existing
-  runner is repo-scoped or org-scoped, so I can't tell you which case
-  you're in.
-- **Winter/quiet-season gap.** The 60-day clock resets on *any* commit, and
-  this workflow only commits on days that trigger (Enhanced+, or a hatched
-  tornado area). In a long stretch with neither anywhere in CONUS (more
-  plausible in winter), you could still hit 60 quiet days and get
-  auto-disabled -- the fix (not yet built)
-  would be a separate, infrequent heartbeat commit (e.g. monthly) as a
-  backstop, independent of whether any story fired.
+**The local-site approach itself (new, from this round)**
+- **Old picture history is gone from GitHub going forward, but not
+  instantly purged.** I deleted the previously-committed slide PNGs from
+  the `stories` branch tip in a normal commit, and no new pictures will
+  ever be committed again -- but git history keeps old blobs around until
+  something rewrites it (`git gc`, a history rewrite + force-push), which
+  I did not do since that's destructive and wasn't asked for. If you want
+  those old blobs fully gone, that's a deliberate follow-up, not something
+  this change did silently.
+- **The Mac has to actually be on and reachable for the site to work,
+  independent of Actions.** Unlike before (where "did the workflow run"
+  was the only thing that mattered), the download page now depends on two
+  *always-on* launchd services (`site/server.py` and `cloudflared`) staying
+  up between runs, not just during them. If the Mac reboots and those
+  services don't restart (`KeepAlive`/`RunAtLoad` should handle this, but
+  it's unverified end-to-end), the site goes dark even though the
+  generator keeps running fine on its own schedule.
+- **Heartbeat commit still needed, now for a different reason.** Removing
+  the picture commits also removed the thing that was *accidentally*
+  keeping GitHub's 60-day auto-disable clock reset. The workflow now pushes
+  a one-line `heartbeat.txt` timestamp every run instead (see "Scheduling
+  via GitHub Actions" above) -- untested end-to-end like the rest of the
+  push flow.
 - **Push races.** I added `concurrency: cancel-in-progress: false` so
-  overlapping scheduled runs queue instead of both trying to push at once,
-  but I haven't tested this under real overlap.
+  overlapping scheduled runs queue instead of both trying to push the
+  heartbeat at once, but I haven't tested this under real overlap.
 
 **Delivery mechanism**
-- The topic name is effectively a password with no rotation/revocation UI
-  beyond picking a new one. Don't reuse a topic name you use for anything
-  sensitive.
-- The "Download Latest SPC Slides" Shortcut hits `api.github.com`
-  unauthenticated, which is capped at 60 requests/hour per IP -- a
-  non-issue at 5 checks/day, but worth knowing if you run it repeatedly
-  while testing.
+- The Cloudflare Tunnel hostname is effectively the new "password" for
+  reaching the site (nothing enforces auth on it by default) -- anyone who
+  guesses or is given the URL can view/download the current slides. Add a
+  Cloudflare Access policy on the hostname if you want to lock it down
+  further; not set up here since you didn't ask for auth.
+- The ntfy topic name is still effectively a password too, same as before,
+  with no rotation/revocation UI beyond picking a new one.
 
 **The self-hosted runner itself**
 - GitHub's `schedule` trigger only fires if a runner is online to pick up
@@ -378,8 +291,8 @@ project, not a tweak to this one.
 
 ## Possible next steps (not built yet)
 
-- A monthly heartbeat commit as a backstop against the winter-quiet-season
-  gap described above.
+- A Cloudflare Access policy (or similar) in front of the download site --
+  right now the tunnel hostname itself is the only thing gating access.
 - Auto-detecting hatched significant-severe areas for **hail and wind**
   (`day1otlk_sighail.nolyr.geojson` / `day1otlk_sigwind.nolyr.geojson`
   exist alongside `day1otlk_sigtorn.nolyr.geojson` and follow the same

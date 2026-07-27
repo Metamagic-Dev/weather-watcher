@@ -1,4 +1,8 @@
 stories-branch/
+__pycache__/
 
 # Git worktrees
 .claude/worktrees/
+
+# Local launchd service logs (created by deploy/install.sh on the Mac Mini)
+deploy/logs/
