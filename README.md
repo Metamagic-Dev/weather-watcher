@@ -93,7 +93,16 @@ Tunnel)" below for the one-time setup.
   site always has *something* current to show.
 - Also writes an `index.html` download page into the output folder
   alongside the images (see `write_index_html()`) -- this is what
-  `site/server.py` serves at `/`.
+  `site/server.py` serves at `/`. A `spc_story_<stamp>.zip` bundling every
+  image from the run (see `write_zip_archive()`) sits next to them, and the
+  page's "Download All" link points at it -- one file instead of tapping
+  each image individually. Per-image links keep the HTML `download`
+  attribute (one-click save) everywhere except iOS, where a small inline
+  script strips it: Safari has no API for a webpage to save straight into
+  Photos (an intentional OS restriction), so on iOS the link instead opens
+  the image full-screen for the OS's own long-press/share "Save Image" --
+  `download` would otherwise route the tap into a Files-app download
+  instead of that flow.
 - Sends a single text-only ntfy notification every run, trigger or not,
   summarizing every day checked -- e.g. "Day 1: Enhanced Risk. Day 2: 'SLGT'
   -- below Enhanced, no hatched tornado risk. Day 3: 'TSTM' -- below
@@ -157,21 +166,42 @@ One-time setup, run directly on the Mac Mini:
 2. **Authenticate**: `cloudflared tunnel login` -- opens a browser to pick
    the Cloudflare account/zone (domain) this tunnel will attach to.
 3. **Create the tunnel**: `cloudflared tunnel create spc-outlook` -- prints
-   a UUID and writes credentials to `~/.cloudflared/<UUID>.json`.
+   a UUID and writes credentials to `~/.cloudflared/<UUID>.json`. **Skip
+   this if you already run a cloudflared tunnel on this Mac for other
+   hostnames** -- one tunnel can proxy multiple hostnames to multiple local
+   ports, so reuse the existing one (add a new `hostname:`/`service:` pair
+   to its `ingress:` list in the next step) instead of running two
+   cloudflared processes off the same default config path.
 4. **Route a hostname to it**:
    `cloudflared tunnel route dns spc-outlook spc-outlook.yourdomain.com`
-   (any subdomain of a domain in your Cloudflare account).
+   (any subdomain of a domain in your Cloudflare account; use your existing
+   tunnel's name/UUID here if you skipped step 3).
 5. **Configure the tunnel**: copy `deploy/cloudflared-config.yml` to
    `~/.cloudflared/config.yml` and fill in the tunnel UUID, the
-   credentials-file path, and the hostname from steps 3-4.
-6. **Install the services**: from a checkout of this repo on the Mac, run
-   `./deploy/install.sh`. It generates the two launchd plists from the
+   credentials-file path, and the hostname from steps 3-4 -- or, if reusing
+   an existing tunnel, just add its `ingress:` entry (pointing at
+   `http://127.0.0.1:8787`, or whatever port you pick in the next step) to
+   your existing config.yml alongside your other hostnames, then restart
+   that tunnel so it picks up the change.
+6. **Install the service(s)**: from a checkout of this repo on the Mac, run
+   `./deploy/install.sh`. It generates the launchd plist(s) from the
    templates in `deploy/` (filling in absolute paths for `python3`,
    `cloudflared`, and this checkout), installs them to
-   `~/Library/LaunchAgents/`, and starts both. Logs land in
-   `deploy/logs/`.
+   `~/Library/LaunchAgents/`, and starts them. Logs land in `deploy/logs/`.
+   - Fresh setup (no existing tunnel): installs both the web server and a
+     new cloudflared tunnel service.
+   - Reusing an existing tunnel (step 3 skipped): run
+     `./deploy/install.sh --web-only` instead -- installs just the web
+     server, since your existing cloudflared process already covers the
+     tunnel side.
+   - If port `8787` is already taken by something else on the Mac (as it
+     was for `claudecontrol` in one real setup), set
+     `SPC_STORY_WEB_PORT=8788` (or any free port) before running the
+     script, and point your `ingress:` rule at that same port.
 7. **Verify**: visit `https://spc-outlook.yourdomain.com` -- you should see
-   the download page (empty until the first slides are generated).
+   the download page (empty until the first slides are generated). A local
+   `curl -I http://127.0.0.1:<port>/index.html` should return a response
+   (even a 404 is fine pre-first-run) before you test the public URL.
 8. **Optional**: add that URL as a repository variable named
    `SPC_STORY_SITE_URL` so it gets appended to the ntfy notification --
    tapping the notification then takes you straight to the page.

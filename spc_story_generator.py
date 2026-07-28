@@ -30,6 +30,7 @@ than the ENH/MDT/HIGH categorical scheme this script's trigger is built on.
 import io
 import os
 import sys
+import zipfile
 import datetime
 from zoneinfo import ZoneInfo
 import requests
@@ -167,13 +168,37 @@ def clear_output_dir(directory):
             os.remove(path)
 
 
-def write_index_html(directory, stamp, summaries, image_names):
+def write_zip_archive(directory, stamp, image_names):
+    """
+    Bundles this run's images into a single spc_story_<stamp>.zip alongside
+    them, so "download all" can be one link instead of a client-side
+    multi-download (which mobile Safari handles unreliably) or a third-party
+    JS zip library (which would need a CDN, breaking offline rendering).
+    Returns the zip's filename.
+    """
+    zip_name = f"spc_story_{stamp}.zip"
+    zip_path = os.path.join(directory, zip_name)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name in image_names:
+            zf.write(os.path.join(directory, name), arcname=name)
+    return zip_name
+
+
+def write_index_html(directory, stamp, summaries, image_names, zip_name):
     """
     Writes the download page the local site serves at `/`. Self-contained
-    (no external requests) so it still renders if the Mac's offline for a
-    moment. Lists exactly what's on disk right now -- nothing more -- which
-    is guaranteed to be just this run's slides since clear_output_dir() wipes
-    the directory before this is called.
+    (no external requests, no CDN-hosted JS) so it still renders if the
+    Mac's offline for a moment. Lists exactly what's on disk right now --
+    nothing more -- which is guaranteed to be just this run's slides since
+    clear_output_dir() wipes the directory before this is called.
+
+    Individual image links carry `download` by default (one-click save on
+    desktop/Android), but a small inline script strips that attribute on
+    iOS: Safari has no API for a webpage to write directly into Photos --
+    that's an intentional OS privacy restriction -- so the closest thing is
+    tap-to-open-full-screen then the OS's own long-press "Add to Photos" /
+    share-sheet "Save Image", which only works cleanly when the link isn't
+    forced into a Files-app download instead.
     """
     stamp_dt = datetime.datetime.strptime(stamp, "%Y%m%d_%H%M").replace(tzinfo=datetime.timezone.utc)
     generated_label = stamp_dt.astimezone(EASTERN).strftime("%Y-%m-%d %H:%M %Z")
@@ -183,12 +208,13 @@ def write_index_html(directory, stamp, summaries, image_names):
       <img src="{name}" alt="{name}" loading="lazy">
       <figcaption>
         <span>{name}</span>
-        <a href="{name}" download>Download</a>
+        <a class="dl-link" href="{name}" download>Download</a>
       </figcaption>
     </figure>'''
         for name in image_names
     )
     summary_items = "\n".join(f"      <li>{s}</li>" for s in summaries)
+    count_label = f"{len(image_names)} image{'s' if len(image_names) != 1 else ''}"
 
     html = f"""<!doctype html>
 <html lang="en">
@@ -202,7 +228,10 @@ def write_index_html(directory, stamp, summaries, image_names):
          margin: 0; padding: 24px 16px 60px; }}
   h1 {{ font-size: 1.4rem; margin-bottom: 4px; }}
   .generated {{ color: #9a9fa8; margin-top: 0; margin-bottom: 20px; }}
-  ul.summary {{ padding-left: 20px; color: #cfd2d8; margin-bottom: 32px; }}
+  ul.summary {{ padding-left: 20px; color: #cfd2d8; margin-bottom: 24px; }}
+  .download-all {{ display: inline-block; color: #0d0f14; background: #f0f0f0; text-decoration: none;
+                    padding: 12px 20px; border-radius: 999px; font-weight: 700; margin-bottom: 12px; }}
+  #ios-note {{ display: none; color: #9a9fa8; font-size: 0.85rem; margin: 0 0 28px; max-width: 60ch; }}
   .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px; }}
   figure {{ margin: 0; background: #1a1d24; border-radius: 12px; overflow: hidden; }}
   figure img {{ width: 100%; display: block; }}
@@ -219,9 +248,31 @@ def write_index_html(directory, stamp, summaries, image_names):
 <ul class="summary">
 {summary_items}
 </ul>
+<a class="download-all" href="{zip_name}" download>Download All ({count_label}, .zip)</a>
+<p id="ios-note">On iPhone/iPad: tap an image below to open it full-screen, then tap and hold
+(or use the Share button) to Save to Photos -- Safari doesn't let a webpage save straight into
+Photos itself. "Download All" above saves a ZIP file instead, which lands in the Files app.</p>
 <div class="grid">
 {cards}
 </div>
+<script>
+// Safari has no way for a page to write into Photos directly (deliberate
+// OS restriction), so the best available flow on iOS is: open the image,
+// then the OS's own long-press/share "Save Image". The `download`
+// attribute pushes taps into a Files-app download instead of that flow,
+// so it's removed here on iOS specifically -- desktop/Android keep the
+// one-click save via `download`.
+(function () {{
+  var isIOS = /iP(hone|od|ad)/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (!isIOS) return;
+  document.querySelectorAll("a.dl-link").forEach(function (a) {{
+    a.removeAttribute("download");
+  }});
+  var note = document.getElementById("ios-note");
+  if (note) note.style.display = "block";
+}})();
+</script>
 </body>
 </html>
 """
@@ -604,7 +655,8 @@ def main():
         print(f"Saved {path}")
         image_names.append(name)
 
-    write_index_html(OUTPUT_DIR, stamp, summaries, image_names)
+    zip_name = write_zip_archive(OUTPUT_DIR, stamp, image_names)
+    write_index_html(OUTPUT_DIR, stamp, summaries, image_names, zip_name)
 
     print(" ".join(summaries))
     message = "🚨 Outlook images generated!"
