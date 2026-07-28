@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.metamagicdev.spc-outlook-web</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON3__</string>
+        <string>__REPO_DIR__/site/server.py</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SPC_STORY_OUTPUT_DIR</key>
+        <string>__SITE_DIR__</string>
+    </dict>
+
+    <!-- Starts at login and restarts automatically if it ever exits, so the
+         download page stays up without anyone needing to keep a terminal
+         open. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__REPO_DIR__/deploy/logs/web.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO_DIR__/deploy/logs/web.err.log</string>
+</dict>
+</plist>

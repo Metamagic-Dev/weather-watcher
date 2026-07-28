@@ -10,13 +10,13 @@ on:
     - cron: "35 1 * * *"
   workflow_dispatch: {} # lets you trigger it manually to test
 
-# Prevents overlapping runs from racing each other on git push.
+# Prevents overlapping runs from racing each other on the heartbeat push.
 concurrency:
   group: spc-outlook-story
   cancel-in-progress: false
 
 permissions:
-  contents: write # needed to commit/push the generated slides
+  contents: write # needed to commit/push the heartbeat file (see below)
 
 jobs:
   generate:
@@ -30,11 +30,26 @@ jobs:
       - name: Install dependencies
         run: pip3 install --user -r requirements.txt
 
-      # main requires PRs + review, so the bot can't push slide commits there.
-      # Slides live on a separate, unprotected `stories` branch instead, checked
-      # out as a worktree here so rotate_old_slides() can see (and prune) the
-      # slides already committed from previous runs.
-      - name: Check out stories branch
+      # The generated slides never touch GitHub at all now -- the script
+      # writes them straight to a folder on this Mac (outside the repo
+      # checkout) that site/server.py serves over the Cloudflare Tunnel.
+      # No SPC_STORY_OUTPUT_DIR override here, so it uses the script's own
+      # default (~/spc-outlook-site/stories), which must match whatever
+      # deploy/install.sh configured the local web server to serve.
+      - name: Generate story slides if risk is Enhanced+ or a hatched tornado area is present
+        env:
+          SPC_NTFY_TOPIC: ${{ secrets.SPC_NTFY_TOPIC }}
+          SPC_STORY_SITE_URL: ${{ vars.SPC_STORY_SITE_URL }}
+        run: python3 spc_story_generator.py
+
+      # main requires PRs + review, so the bot can't push here -- and this
+      # repo has no images to commit anymore anyway. This step only touches
+      # a one-line timestamp file on the separate, unprotected `stories`
+      # branch, purely so *some* commit activity happens on every run
+      # (trigger or not): GitHub auto-disables a scheduled workflow after
+      # 60 days with no repo commits, and without this, a quiet stretch of
+      # sub-Enhanced weather would silently kill the schedule.
+      - name: Heartbeat commit (no pictures -- keeps the schedule from auto-disabling)
         run: |
           git worktree prune
           if git ls-remote --exit-code --heads origin stories >/dev/null 2>&1; then
@@ -46,32 +61,17 @@ jobs:
             git -C stories-branch rm -rf . >/dev/null 2>&1 || true
           fi
 
-      - name: Generate story slides if risk is Enhanced+ or a hatched tornado area is present
-        env:
-          SPC_STORY_OUTPUT_DIR: ${{ github.workspace }}/stories-branch/stories
-          SPC_NTFY_TOPIC: ${{ secrets.SPC_NTFY_TOPIC }}
-        run: python3 spc_story_generator.py
-
-      - name: Commit and push new slides
-        run: |
           cd stories-branch
+          date -u +"%Y-%m-%dT%H:%M:%SZ last run" > heartbeat.txt
           git config user.name "spc-outlook-bot"
           git config user.email "spc-outlook-bot@users.noreply.github.com"
-          git add stories/
+          git add heartbeat.txt
           if git diff --cached --quiet; then
-            echo "No new slides this run -- nothing to commit."
+            echo "Heartbeat unchanged -- nothing to commit."
           else
-            git commit -m "SPC outlook story: $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git commit -m "Heartbeat: $(date -u +'%Y-%m-%d %H:%M UTC')"
             git push origin stories
           fi
-
-      - name: Upload slides as workflow artifact (optional secondary copy)
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: spc-story-slides-${{ github.run_id }}
-          path: stories-branch/stories/
-          if-no-files-found: ignore
 
       - name: Clean up stories worktree
         if: always()

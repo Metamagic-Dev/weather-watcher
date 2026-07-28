@@ -29,7 +29,6 @@ than the ENH/MDT/HIGH categorical scheme this script's trigger is built on.
 """
 import io
 import os
-import re
 import sys
 import datetime
 from zoneinfo import ZoneInfo
@@ -88,15 +87,16 @@ DAY_CONFIGS = (
     },
 )
 
-# Defaults to a folder INSIDE the repo checkout -- the workflow commits and
-# pushes this folder so images (a) are the actual delivery mechanism (pulled
-# by the iOS Shortcut) and (b) generate the commit activity that keeps GitHub
-# from auto-disabling the schedule after 60 quiet days. See rotate_old_slides()
-# for cleanup.
-OUTPUT_DIR = os.environ.get("SPC_STORY_OUTPUT_DIR", "./stories")
-KEEP_RECENT = int(os.environ.get("SPC_STORY_KEEP_RECENT", "5"))
+# Defaults to a folder OUTSIDE the repo checkout, in the runner's home
+# directory -- this is the directory site/server.py serves over the
+# Cloudflare Tunnel, so it needs to be a stable path that survives between
+# workflow runs (unlike the repo checkout) and never gets committed to
+# GitHub. See clear_output_dir() for why there's no keep-N/rotation logic:
+# the site only ever shows the single latest run, no archive.
+OUTPUT_DIR = os.environ.get("SPC_STORY_OUTPUT_DIR", os.path.expanduser("~/spc-outlook-site/stories"))
 
 NTFY_TOPIC = os.environ.get("SPC_NTFY_TOPIC")  # optional: push notification via ntfy.sh
+SITE_URL = os.environ.get("SPC_STORY_SITE_URL")  # optional: Cloudflare Tunnel URL, appended to notifications
 
 # Categories worth posting about. SPC's own DN field gives severity order,
 # so we don't need to hardcode a rank -- just a trigger threshold by label.
@@ -151,26 +151,82 @@ def has_significant_tornado_risk(sigtorn_url):
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def rotate_old_slides(directory, keep):
+def clear_output_dir(directory):
     """
-    Deletes all but the `keep` most recent story sets in `directory`.
-    Written in Python rather than a shell one-liner on purpose: the obvious
-    bash approach (`ls | sort | head -n -N`) relies on GNU head's negative
-    -N, which doesn't exist in BSD head -- i.e. it silently breaks on macOS,
-    which is exactly where this runs. Filenames encode their own sort order
-    (YYYYMMDD_HHMM), so plain string sort is enough.
+    Removes every file already in `directory` before a new run's slides are
+    written. The site only ever shows the single latest run -- no archive,
+    no keep-N rotation to maintain -- so the simplest correct thing is to
+    empty the directory and let the new run repopulate it from scratch,
+    including a fresh index.html (see write_index_html()).
+    """
+    if not os.path.isdir(directory):
+        return
+    for f in os.listdir(directory):
+        path = os.path.join(directory, f)
+        if os.path.isfile(path):
+            os.remove(path)
 
-    Matches on the stamp prefix only (not a fixed suffix list) since a story
-    set's slide count varies day to day -- some hazards have no probability
-    area at all and are skipped entirely.
+
+def write_index_html(directory, stamp, summaries, image_names):
     """
-    pattern = re.compile(r"^spc_story_(\d{8}_\d{4})_")
-    stamps = sorted({m.group(1) for m in (pattern.match(f) for f in os.listdir(directory)) if m})
-    for stamp in stamps[:-keep] if len(stamps) > keep else []:
-        prefix = f"spc_story_{stamp}_"
-        for f in os.listdir(directory):
-            if f.startswith(prefix):
-                os.remove(os.path.join(directory, f))
+    Writes the download page the local site serves at `/`. Self-contained
+    (no external requests) so it still renders if the Mac's offline for a
+    moment. Lists exactly what's on disk right now -- nothing more -- which
+    is guaranteed to be just this run's slides since clear_output_dir() wipes
+    the directory before this is called.
+    """
+    stamp_dt = datetime.datetime.strptime(stamp, "%Y%m%d_%H%M").replace(tzinfo=datetime.timezone.utc)
+    generated_label = stamp_dt.astimezone(EASTERN).strftime("%Y-%m-%d %H:%M %Z")
+
+    cards = "\n".join(
+        f'''    <figure>
+      <img src="{name}" alt="{name}" loading="lazy">
+      <figcaption>
+        <span>{name}</span>
+        <a href="{name}" download>Download</a>
+      </figcaption>
+    </figure>'''
+        for name in image_names
+    )
+    summary_items = "\n".join(f"      <li>{s}</li>" for s in summaries)
+
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store">
+<title>SPC Outlook Slides</title>
+<style>
+  body {{ font-family: -apple-system, system-ui, sans-serif; background: #0d0f14; color: #f0f0f0;
+         margin: 0; padding: 24px 16px 60px; }}
+  h1 {{ font-size: 1.4rem; margin-bottom: 4px; }}
+  .generated {{ color: #9a9fa8; margin-top: 0; margin-bottom: 20px; }}
+  ul.summary {{ padding-left: 20px; color: #cfd2d8; margin-bottom: 32px; }}
+  .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px; }}
+  figure {{ margin: 0; background: #1a1d24; border-radius: 12px; overflow: hidden; }}
+  figure img {{ width: 100%; display: block; }}
+  figcaption {{ display: flex; justify-content: space-between; align-items: center;
+                gap: 12px; padding: 10px 14px; font-size: 0.8rem; color: #cfd2d8; }}
+  figcaption span {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+  figcaption a {{ flex-shrink: 0; color: #0d0f14; background: #f0f0f0; text-decoration: none;
+                  padding: 6px 12px; border-radius: 999px; font-weight: 600; }}
+</style>
+</head>
+<body>
+<h1>SPC Outlook Slides</h1>
+<p class="generated">Generated {generated_label}</p>
+<ul class="summary">
+{summary_items}
+</ul>
+<div class="grid">
+{cards}
+</div>
+</body>
+</html>
+"""
+    with open(os.path.join(directory, "index.html"), "w") as f:
+        f.write(html)
 
 
 def load_font(size, bold=False):
@@ -534,18 +590,27 @@ def main():
         notify("🌤️ No ENH+ in the 3 day outlook")
         return
 
+    # New slides are ready -- wipe whatever the last run left behind first,
+    # so the site never briefly (or permanently, if a later step fails)
+    # shows a mix of two different runs' images.
+    clear_output_dir(OUTPUT_DIR)
+
     stamp = now.strftime("%Y%m%d_%H%M")
-    paths = []
+    image_names = []
     for i, (suffix, slide) in enumerate(slides, start=1):
-        path = os.path.join(OUTPUT_DIR, f"spc_story_{stamp}_{i}_{suffix}.png")
+        name = f"spc_story_{stamp}_{i}_{suffix}.png"
+        path = os.path.join(OUTPUT_DIR, name)
         slide.save(path)
         print(f"Saved {path}")
-        paths.append(path)
+        image_names.append(name)
 
-    rotate_old_slides(OUTPUT_DIR, KEEP_RECENT)
+    write_index_html(OUTPUT_DIR, stamp, summaries, image_names)
 
     print(" ".join(summaries))
-    notify("🚨 Outlook images generated!")
+    message = "🚨 Outlook images generated!"
+    if SITE_URL:
+        message += f" {SITE_URL}"
+    notify(message)
 
 
 if __name__ == "__main__":

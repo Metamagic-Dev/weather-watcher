@@ -1,0 +1,20 @@
+# Template for ~/.cloudflared/config.yml on the Mac Mini.
+#
+# This just proxies a hostname to the local site/server.py process (see
+# README "Local download site" section for the full setup). Fill in the
+# two placeholders after running `cloudflared tunnel create spc-outlook`:
+#
+#   - tunnel / credentials-file: printed by `tunnel create`, or run
+#     `cloudflared tunnel list` to find the tunnel's UUID.
+#   - hostname: whatever subdomain you route with
+#     `cloudflared tunnel route dns spc-outlook <hostname>`.
+
+tunnel: <TUNNEL-UUID>
+credentials-file: /Users/<you>/.cloudflared/<TUNNEL-UUID>.json
+
+ingress:
+  - hostname: <spc-outlook.yourdomain.com>
+    service: http://127.0.0.1:8787
+  # Catch-all is required by cloudflared -- anything not matching a rule
+  # above gets a 404 instead of the tunnel failing to start.
+  - service: http_status:404
