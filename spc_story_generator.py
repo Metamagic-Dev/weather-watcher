@@ -34,7 +34,7 @@ import zipfile
 import datetime
 from zoneinfo import ZoneInfo
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 BASE = "https://www.spc.noaa.gov/products/outlook"
 
@@ -304,18 +304,45 @@ SAFE_TOP = 220  # keeps content clear of Instagram's profile/header chrome
 SAFE_BOTTOM = 220  # keeps content clear of Instagram's reply-bar chrome
 
 BG_TOP = (13, 15, 20)
-BG_BOTTOM = (26, 29, 36)
+
+
+STORM_HEADER_IMAGE_PATH = os.path.join(SCRIPT_DIR, "assets", "storm_header.jpg")
+
+
+def storm_cloud_texture(w, h):
+    """Crops/scales the bundled storm photo (assets/storm_header.jpg) to
+    cover a (w, h) box -- scale to the larger ratio, then center-crop the
+    overhang, same as CSS `background-size: cover` -- so it fills the
+    header zone with no distortion or letterboxing regardless of the
+    zone's aspect ratio."""
+    src = Image.open(STORM_HEADER_IMAGE_PATH).convert("RGB")
+    ratio = max(w / src.width, h / src.height)
+    new_size = (int(src.width * ratio) + 1, int(src.height * ratio) + 1)
+    resized = src.resize(new_size, Image.LANCZOS)
+    left = (resized.width - w) // 2
+    top = (resized.height - h) // 2
+    cropped = resized.crop((left, top, left + w, top + h))
+
+    # Darken uniformly so the header text (esp. the muted-gray issued-date
+    # line) stays legible over the photo's brighter cloud/lightning areas.
+    scrim = Image.new("RGB", (w, h), (0, 0, 0))
+    return Image.blend(cropped, scrim, 0.35)
 
 
 def gradient_background():
-    """Subtle top-to-bottom gradient so slides read as designed, not a flat void."""
-    slide = Image.new("RGB", STORY_SIZE)
-    draw = ImageDraw.Draw(slide)
+    """Full-bleed storm photo background, with a top-to-bottom darkening
+    overlay on top of it (lightest near the top, where the photo's own
+    detail matters most; darkest near the footer, where map borders/pills
+    need to pop) -- same vertical mood as the old flat gradient, just with
+    the photo showing through everywhere instead of only behind the header."""
+    slide = storm_cloud_texture(*STORY_SIZE)
     h = STORY_SIZE[1]
+    fade = Image.new("L", STORY_SIZE, 0)
+    fdraw = ImageDraw.Draw(fade)
     for y in range(h):
         t = y / (h - 1)
-        row = tuple(int(BG_TOP[i] + (BG_BOTTOM[i] - BG_TOP[i]) * t) for i in range(3))
-        draw.line([(0, y), (STORY_SIZE[0], y)], fill=row)
+        fdraw.line([(0, y), (STORY_SIZE[0], y)], fill=int(20 + 155 * t))
+    slide.paste(Image.new("RGB", STORY_SIZE, BG_TOP), (0, 0), fade)
     return slide
 
 
@@ -331,19 +358,66 @@ def fit_font(draw, text, max_width, size, bold=False, min_size=22, step=2):
     return font
 
 
-def draw_header(draw, title, issued_label, accent_hex, day_eyebrow="SPC DAY 1 CONVECTIVE OUTLOOK"):
+def _hex_to_rgb(hex_color):
+    h = hex_color.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def draw_shadow_rect(slide, box, radius=0, blur=22, opacity=110, offset=(0, 10), color=None):
+    """Soft glow/shadow behind a rect/pill so flat color blocks read as
+    layered UI instead of construction-paper cutouts. Drawn on a separate
+    RGBA layer and blurred before compositing, since ImageDraw has no
+    native blur. On this near-black background a plain black shadow is
+    nearly invisible, so callers pass the element's own accent color for a
+    soft glow instead -- that's the version that actually shows up here."""
+    glow_rgb = _hex_to_rgb(color) if color else (0, 0, 0)
+    shadow = Image.new("RGBA", slide.size, (0, 0, 0, 0))
+    sdraw = ImageDraw.Draw(shadow)
+    sx0, sy0 = box[0][0] + offset[0], box[0][1] + offset[1]
+    sx1, sy1 = box[1][0] + offset[0], box[1][1] + offset[1]
+    fill = glow_rgb + (opacity,)
+    if radius:
+        sdraw.rounded_rectangle([(sx0, sy0), (sx1, sy1)], radius=radius, fill=fill)
+    else:
+        sdraw.rectangle([(sx0, sy0), (sx1, sy1)], fill=fill)
+    shadow = shadow.filter(ImageFilter.GaussianBlur(blur))
+    slide.paste(Image.new("RGB", slide.size, glow_rgb), (0, 0), shadow)
+
+
+def draw_tracked_text(draw, xy, text, font, fill, tracking=4):
+    """Letter-spaced text -- PIL has no native tracking, so this walks the
+    string and advances by each glyph's own width plus `tracking` px.
+    Used for small uppercase eyebrow/label text, where extra spacing reads
+    as more deliberate than the font's default cramped kerning."""
+    x, y = xy
+    for ch in text:
+        draw.text((x, y), ch, font=font, fill=fill)
+        bbox = draw.textbbox((0, 0), ch, font=font)
+        x += (bbox[2] - bbox[0] if ch != " " else font.size * 0.35) + tracking
+
+
+def _header_geometry(draw, title):
+    """Title font/bbox plus the y where the header content block ends --
+    shared by draw_header (to actually draw it) and by callers that need to
+    size the storm-texture zone *before* the real background exists yet."""
     max_w = STORY_SIZE[0] - 2 * MARGIN
-    eyebrow_font = load_font(30, bold=True)
     title_font = fit_font(draw, title, max_w, 80, bold=True)
+    title_bbox = draw.textbbox((0, 0), title, font=title_font)
+    content_y = SAFE_TOP + 30 + 42 + (title_bbox[3] - title_bbox[1]) + 18 + 32 + 44
+    return title_font, title_bbox, content_y
+
+
+def draw_header(draw, title, issued_label, accent_hex, day_eyebrow="SPC DAY 1 CONVECTIVE OUTLOOK"):
+    eyebrow_font = load_font(28, bold=True)
     sub_font = load_font(32)
+    title_font, title_bbox, _ = _header_geometry(draw, title)
 
     y = SAFE_TOP
     draw.rectangle([(MARGIN, y), (MARGIN + 64, y + 8)], fill=accent_hex)
-    y += 26
-    draw.text((MARGIN, y), day_eyebrow, font=eyebrow_font, fill=accent_hex)
+    y += 30
+    draw_tracked_text(draw, (MARGIN, y), day_eyebrow, eyebrow_font, accent_hex, tracking=3)
     y += 42
 
-    title_bbox = draw.textbbox((0, 0), title, font=title_font)
     draw.text((MARGIN, y - title_bbox[1]), title, font=title_font, fill="white")
     y += (title_bbox[3] - title_bbox[1]) + 18
 
@@ -352,10 +426,54 @@ def draw_header(draw, title, issued_label, accent_hex, day_eyebrow="SPC DAY 1 CO
     return y  # y where header content ends
 
 
+def matte_metal_texture(w, h, accent_hex):
+    """Brushed-metal panel tinted with the risk category's own color: a
+    horizontally-smoothed noise field for the brushed grain (shrink
+    horizontally then stretch back -- blurs across the grain direction
+    while keeping vertical detail, the cheap way to fake anisotropic
+    brushing without a custom kernel), plus a soft diagonal light sheen.
+    Blended onto the flat accent color with soft-light so the banner still
+    reads as that risk color, just as a physical panel instead of a flat fill."""
+    grain = Image.effect_noise((w, h), 30)
+    streaky = grain.resize((max(1, w // 50), h), Image.BILINEAR).resize((w, h), Image.BILINEAR)
+    streaky = ImageOps.autocontrast(streaky, cutoff=1)
+
+    # Diagonal sheen: a vertical soft band rendered into an oversized canvas,
+    # rotated, then cropped back down -- simplest way to get an angled
+    # gradient without hand-rolling per-pixel trig.
+    grad = Image.new("L", (w * 2, h * 2), 0)
+    gdraw = ImageDraw.Draw(grad)
+    band_x = w * 2 * 0.35
+    for x in range(int(band_x - w * 0.5), int(band_x + w * 0.5)):
+        val = int(255 * max(0, 1 - abs(x - band_x) / (w * 0.5)))
+        gdraw.line([(x, 0), (x, h * 2)], fill=val)
+    grad = grad.rotate(20, resample=Image.BICUBIC)
+    left, top = (grad.width - w) // 2, (grad.height - h) // 2
+    sheen = grad.crop((left, top, left + w, top + h)).filter(ImageFilter.GaussianBlur(30))
+
+    metal_l = ImageChops.screen(streaky, sheen.point(lambda p: int(p * 0.5)))
+    metal_l = ImageOps.autocontrast(metal_l, cutoff=1)
+    metal_rgb = Image.merge("RGB", (metal_l, metal_l, metal_l))
+
+    flat = Image.new("RGB", (w, h), _hex_to_rgb(accent_hex))
+    textured = ImageChops.soft_light(flat, metal_rgb)
+
+    # Faint bevel: darken the top/bottom few px so the panel reads as
+    # slightly recessed/embossed rather than a texture floating on top.
+    edge = max(6, h // 12)
+    bevel = Image.new("L", (w, h), 255)
+    bdraw = ImageDraw.Draw(bevel)
+    for i in range(edge):
+        shade = int(255 * (0.55 + 0.45 * i / edge))
+        bdraw.line([(0, i), (w, i)], fill=shade)
+        bdraw.line([(0, h - 1 - i), (w, h - 1 - i)], fill=shade)
+    return ImageChops.multiply(textured, Image.merge("RGB", (bevel, bevel, bevel)))
+
+
 def draw_footer(draw, accent_hex, top=None):
     label_font = load_font(30, bold=True)
     pill_top = STORY_SIZE[1] - SAFE_BOTTOM - 76 if top is None else top
-    text = "FULL OUTLOOK -> spc.noaa.gov"
+    text = "FULL OUTLOOK @ spc.noaa.gov"
     bbox = draw.textbbox((0, 0), text, font=label_font)
     text_w = bbox[2] - bbox[0]
     pill_w = text_w + 80
@@ -377,19 +495,22 @@ def paste_bordered_map(slide, draw, map_img, x, y, w, h, accent_hex, border_w=3)
         (pos[0] - border_w, pos[1] - border_w),
         (pos[0] + new_size[0] + border_w, pos[1] + new_size[1] + border_w),
     ]
+    draw_shadow_rect(slide, border, radius=10, blur=26, opacity=110, offset=(0, 12), color=accent_hex)
     draw.rectangle(border, outline=accent_hex, width=border_w)
     slide.paste(resized, pos)
     return new_size
 
 
-def draw_hazard_pill(draw, x, y, text, fill_hex, font_size, max_w):
+def draw_hazard_pill(slide, draw, x, y, text, fill_hex, font_size, max_w):
     """A filled, rounded percentage badge (e.g. '45% WIND RISK') used above
     each hazard's mini-map in the combined hazards slide."""
     font = fit_font(draw, text, max_w - 40, font_size, bold=True)
     bbox = draw.textbbox((0, 0), text, font=font)
     pill_h = int(font_size * 1.6)
     pill_w = min(max_w, bbox[2] - bbox[0] + 40)
-    draw.rounded_rectangle([(x, y), (x + pill_w, y + pill_h)], radius=pill_h // 2, fill=fill_hex)
+    pill_box = [(x, y), (x + pill_w, y + pill_h)]
+    draw_shadow_rect(slide, pill_box, radius=pill_h // 2, blur=16, opacity=110, offset=(0, 6), color=fill_hex)
+    draw.rounded_rectangle(pill_box, radius=pill_h // 2, fill=fill_hex)
     draw.text((x + 20, y + pill_h // 2 - (bbox[3] - bbox[1]) // 2 - bbox[1]), text, font=font, fill="black")
     return pill_h
 
@@ -410,7 +531,9 @@ def make_hero_map_slide(map_img, title, issued_label, banner_text, accent_hex, e
     # the headline of the slide rather than an afterthought at the bottom.
     banner_top = content_y
     banner_h = 190
-    draw.rectangle([(0, banner_top), (STORY_SIZE[0], banner_top + banner_h)], fill=accent_hex)
+    draw_shadow_rect(slide, [(0, banner_top), (STORY_SIZE[0], banner_top + banner_h)],
+                      radius=0, blur=34, opacity=130, offset=(0, 14), color=accent_hex)
+    slide.paste(matte_metal_texture(STORY_SIZE[0], banner_h, accent_hex), (0, banner_top))
     banner_font = fit_font(draw, banner_text, STORY_SIZE[0] - 2 * MARGIN, 72, bold=True)
     bbox = draw.textbbox((0, 0), banner_text, font=banner_font)
     text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -432,7 +555,8 @@ def make_hero_map_slide(map_img, title, issued_label, banner_text, accent_hex, e
         ((STORY_SIZE[0] - eff_pill_w) // 2, eff_top),
         ((STORY_SIZE[0] + eff_pill_w) // 2, eff_top + eff_pill_h),
     ]
-    draw.rounded_rectangle(eff_pill, radius=eff_pill_h // 2, outline=accent_hex, width=4)
+    draw_shadow_rect(slide, eff_pill, radius=eff_pill_h // 2, blur=18, opacity=110, offset=(0, 6), color=accent_hex)
+    draw.rounded_rectangle(eff_pill, radius=eff_pill_h // 2, fill="#1a1d24", outline=accent_hex, width=4)
     draw.text(
         ((STORY_SIZE[0] - eff_text_w) // 2, eff_top + (eff_pill_h - eff_text_h) // 2 - eff_bbox[1]),
         effective_text, font=eff_font, fill="white",
@@ -482,7 +606,7 @@ def make_hazards_combined_slide(hazard_data, issued_label, day_eyebrow="SPC DAY 
 
         y = content_y + max(0, (available - total_content_h) // 2)
         for _title, map_img, pct_display, fill_hex, _dn in hazard_data:
-            ph = draw_hazard_pill(draw, MARGIN, y, pct_display.upper(), fill_hex, 40, max_w)
+            ph = draw_hazard_pill(slide, draw, MARGIN, y, pct_display.upper(), fill_hex, 40, max_w)
             y += ph + gap_after_pill
             paste_bordered_map(slide, draw, map_img, MARGIN, y, max_w, map_h, fill_hex)
             y += map_h + inter_card_gap
@@ -508,7 +632,7 @@ def make_hazards_combined_slide(hazard_data, issued_label, day_eyebrow="SPC DAY 
         total_content_h = hero_pill_h_est + hero_gap + hero_map_h + row_gap + bottom_block_h
 
         y = content_y + max(0, (available - total_content_h) // 2)
-        ph = draw_hazard_pill(draw, MARGIN, y, hero[2].upper(), hero[3], 44, max_w)
+        ph = draw_hazard_pill(slide, draw, MARGIN, y, hero[2].upper(), hero[3], 44, max_w)
         y += ph + hero_gap
         paste_bordered_map(slide, draw, hero[1], MARGIN, y, max_w, hero_map_h, hero[3])
         y += hero_map_h + row_gap
@@ -517,7 +641,7 @@ def make_hazards_combined_slide(hazard_data, issued_label, day_eyebrow="SPC DAY 
         row_top = y
         col_bottom = row_top
         for _title, map_img, pct_display, fill_hex, _dn in rest:
-            ph2 = draw_hazard_pill(draw, x, row_top, pct_display.upper(), fill_hex, 30, col_w)
+            ph2 = draw_hazard_pill(slide, draw, x, row_top, pct_display.upper(), fill_hex, 30, col_w)
             cy = row_top + ph2 + 12
             paste_bordered_map(slide, draw, map_img, x, cy, col_w, col_map_h, fill_hex)
             col_bottom = max(col_bottom, cy + col_map_h)
@@ -588,7 +712,7 @@ def build_day_slides(day_cfg, top):
     map_img = download_map_image(day_cfg["map_url"])
     slides = [(f"day{day}_map", make_hero_map_slide(
         map_img, hero_title, issued_label, risk_display.upper(),
-        props.get("fill", "#E6C120"), effective_text, day_eyebrow,
+        props.get("fill", "#9a9fa8"), effective_text, day_eyebrow,
     ))]
 
     hazard_data = []
@@ -604,7 +728,7 @@ def build_day_slides(day_cfg, top):
         hz_props = hz_top["properties"]
         hz_display = hz_props.get("LABEL2", hz_props.get("LABEL", "?"))
         hz_img = download_map_image(image_url)
-        hazard_data.append((title, hz_img, hz_display, hz_props.get("fill", "#E6C120"), hz_props.get("DN", 0)))
+        hazard_data.append((title, hz_img, hz_display, hz_props.get("fill", "#9a9fa8"), hz_props.get("DN", 0)))
 
     if hazard_data:
         slides.append((f"day{day}_hazards", make_hazards_combined_slide(
