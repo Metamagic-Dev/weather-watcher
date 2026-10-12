@@ -39,10 +39,8 @@ its own real data (peak %, its own map) rather than restating the
 categorical color key.
 
 If none of Day 1/2/3 reach Enhanced and none have a hatched tornado area,
-the script produces no files -- but it still sends a single ntfy
-notification summarizing all three days, precisely so you know the check
-ran and there's nothing to worry about, rather than wondering whether it
-silently failed.
+the script produces no files and sends no notification. You're only
+pinged on an Enhanced+ / hatched-tornado trigger, or if the run fails.
 
 **Generation runs on your Mac (self-hosted runner), and the slides never
 leave it.** GitHub only hosts the script and the Actions automation --
@@ -103,13 +101,12 @@ Tunnel)" below for the one-time setup.
   the image full-screen for the OS's own long-press/share "Save Image" --
   `download` would otherwise route the tap into a Files-app download
   instead of that flow.
-- Sends a single text-only ntfy notification every run, trigger or not,
-  summarizing every day checked -- e.g. "Day 1: Enhanced Risk. Day 2: 'SLGT'
-  -- below Enhanced, no hatched tornado risk. Day 3: 'TSTM' -- below
-  Enhanced, no hatched tornado risk." plus the site URL when
-  `SPC_STORY_SITE_URL` is set. No image attachments, so a trigger run is
-  one push instead of one per slide. Also fires a local macOS notification
-  as a fallback if it happens to run interactively on the Mac itself.
+- Sends a single text-only ntfy notification only when a run triggers
+  (plus the site URL when `SPC_STORY_SITE_URL` is set) or when it fails
+  (script exception or any other workflow step). Quiet runs are silent. No
+  image attachments, so a trigger run is one push instead of one per slide.
+  Also fires a local macOS notification as a fallback if it happens to run
+  interactively on the Mac itself.
 - The actual images are picked up by visiting the Cloudflare Tunnel URL
   (see "Local download site (Cloudflare Tunnel)" below) -- nothing is ever
   pushed to GitHub.

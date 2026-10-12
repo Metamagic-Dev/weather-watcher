@@ -36,7 +36,8 @@ jobs:
       # No SPC_STORY_OUTPUT_DIR override here, so it uses the script's own
       # default (~/spc-outlook-site/stories), which must match whatever
       # deploy/install.sh configured the local web server to serve.
-      - name: Generate story slides if risk is Enhanced+ or a hatched tornado area is present
+      - id: generate
+        name: Generate story slides if risk is Enhanced+ or a hatched tornado area is present
         env:
           SPC_NTFY_TOPIC: ${{ secrets.SPC_NTFY_TOPIC }}
           SPC_STORY_SITE_URL: ${{ vars.SPC_STORY_SITE_URL }}
@@ -72,6 +73,16 @@ jobs:
             git commit -m "Heartbeat: $(date -u +'%Y-%m-%d %H:%M UTC')"
             git push origin stories
           fi
+
+      # The script notifies on its own failures; this covers every other step.
+      - name: Notify on workflow failure
+        if: failure() && steps.generate.outcome != 'failure'
+        env:
+          SPC_NTFY_TOPIC: ${{ secrets.SPC_NTFY_TOPIC }}
+        run: |
+          [ -n "$SPC_NTFY_TOPIC" ] && curl -s -H "Title: SPC Outlook" \
+            -d "⚠️ SPC Outlook workflow failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            "https://ntfy.sh/$SPC_NTFY_TOPIC" || true
 
       - name: Clean up stories worktree
         if: always()
