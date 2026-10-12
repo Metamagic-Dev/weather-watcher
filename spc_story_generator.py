@@ -7,9 +7,8 @@ categorical risk is Enhanced (ENH), Moderate (MDT), or High (HIGH), OR when
 SPC has drawn a hatched ("significant", ~EF2+) tornado risk area for that
 day -- that can appear on days whose categorical risk is only
 Marginal/Slight, so it's checked independently. A day that doesn't clear
-either bar is skipped, but a notification still goes out either way (summing
-up every day checked) so silence doesn't get mistaken for the script having
-failed.
+either bar is skipped. A notification goes out only when something triggers
+or the run fails; quiet runs are silent.
 
 Data sources (public, no API key required):
   - Categorical risk polygons: SPC's own GeoJSON export, one per day
@@ -671,8 +670,8 @@ def notify(message):
     Single text-only ntfy notification -- no attachments, so a multi-slide
     run is one push instead of one-per-slide. Slides themselves live on the
     `stories` branch (and an iOS Shortcut pulls the latest set from there),
-    so ntfy only needs to announce the outcome. Fires every run, trigger or
-    not, so silence never gets mistaken for the script having failed.
+    so ntfy only needs to announce the outcome. Only called on an ENH+ trigger
+    or a failed run; quiet runs stay silent.
     """
     send_text_notification(message)
     if sys.platform == "darwin":
@@ -761,8 +760,7 @@ def main():
         summaries.append(f"Day {day}: {reason}.")
 
     if not slides:
-        print(" ".join(summaries))
-        notify("🌤️ No ENH+ in the 3 day outlook")
+        print(" ".join(summaries))  # quiet run: log only, no notification
         return
 
     # New slides are ready -- wipe whatever the last run left behind first,
@@ -790,4 +788,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        # Failed runs must not be silent now that quiet runs don't notify.
+        notify(f"⚠️ SPC Outlook run failed: {type(e).__name__}: {e}")
+        raise
